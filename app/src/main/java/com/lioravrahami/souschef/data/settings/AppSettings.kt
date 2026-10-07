@@ -8,6 +8,9 @@ import kotlinx.coroutines.flow.StateFlow
  * User settings. Plain values live in SharedPreferences (included in Android backups);
  * the API key lives in the device-bound [SecretStore].
  *
+ * Writes use `commit()` (synchronous) on purpose: settings are tiny and rare, and an
+ * asynchronous `apply()` can be lost when the process dies right after the write.
+ *
  * [changes] ticks on every write so Compose screens can re-read values.
  */
 class AppSettings(context: Context) {
@@ -25,26 +28,26 @@ class AppSettings(context: Context) {
 
     var openRouterModel: String
         get() = prefs.getString(KEY_MODEL, DEFAULT_MODEL)?.takeIf { it.isNotBlank() } ?: DEFAULT_MODEL
-        set(value) { prefs.edit().putString(KEY_MODEL, value.trim()).apply(); bump() }
+        set(value) { prefs.edit().putString(KEY_MODEL, value.trim()).commit(); bump() }
 
     /** Relative size of a classical tweak (0.05 = timid, 0.5 = wild). */
     var boldness: Float
         get() = prefs.getFloat(KEY_BOLDNESS, DEFAULT_BOLDNESS)
-        set(value) { prefs.edit().putFloat(KEY_BOLDNESS, value.coerceIn(0.02f, 0.8f)).apply(); bump() }
+        set(value) { prefs.edit().putFloat(KEY_BOLDNESS, value.coerceIn(0.02f, 0.8f)).commit(); bump() }
 
     /** Probability that an exploration run makes a global jump instead of a local tweak. */
     var explorationRate: Float
         get() = prefs.getFloat(KEY_EXPLORATION, DEFAULT_EXPLORATION)
-        set(value) { prefs.edit().putFloat(KEY_EXPLORATION, value.coerceIn(0f, 1f)).apply(); bump() }
+        set(value) { prefs.edit().putFloat(KEY_EXPLORATION, value.coerceIn(0f, 1f)).commit(); bump() }
 
     var keepScreenOn: Boolean
         get() = prefs.getBoolean(KEY_KEEP_SCREEN_ON, true)
-        set(value) { prefs.edit().putBoolean(KEY_KEEP_SCREEN_ON, value).apply(); bump() }
+        set(value) { prefs.edit().putBoolean(KEY_KEEP_SCREEN_ON, value).commit(); bump() }
 
     /** How long the alarm keeps ringing if nobody stops it. */
     var alarmMaxSeconds: Int
         get() = prefs.getInt(KEY_ALARM_MAX, 300)
-        set(value) { prefs.edit().putInt(KEY_ALARM_MAX, value.coerceIn(10, 3600)).apply(); bump() }
+        set(value) { prefs.edit().putInt(KEY_ALARM_MAX, value.coerceIn(10, 3600)).commit(); bump() }
 
     private fun bump() { _changes.value = _changes.value + 1 }
 

@@ -24,11 +24,11 @@ class SecretStore(context: Context) {
 
     fun put(name: String, value: String) {
         if (value.isEmpty()) {
-            prefs.edit().remove(name).apply()
+            prefs.edit().remove(name).commit()
             return
         }
         val encrypted = runCatching { encrypt(value) }.getOrNull() ?: return
-        prefs.edit().putString(name, encrypted).apply()
+        prefs.edit().putString(name, encrypted).commit()
     }
 
     private fun key(): SecretKey {
