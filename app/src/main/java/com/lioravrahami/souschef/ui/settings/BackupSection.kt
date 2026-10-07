@@ -123,7 +123,14 @@ fun BackupSection(container: AppContainer) {
             BigOutlinedButton(
                 text = "Share backup",
                 enabled = busy == null,
-                onClick = { context.shareText(text) },
+                onClick = {
+                    try {
+                        context.shareText(text)
+                    } catch (e: RuntimeException) {
+                        // No app to share with, or the text is too big to hand over.
+                        dialog = "Share failed" to "Could not share the backup (${e.javaClass.simpleName}). Use \"Export backup file\" instead."
+                    }
+                },
             )
         }
         busy?.let { label ->
