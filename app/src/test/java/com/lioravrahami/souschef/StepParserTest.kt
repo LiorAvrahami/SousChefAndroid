@@ -83,6 +83,35 @@ class StepParserTest {
     }
 
     @Test
+    fun parsesFractionsMixedNumbersAndThousands() {
+        fun values(text: String) = StepParser.paramsInText(text).map { it.first }
+        assertEquals(listOf(0.5), values("Add 1/2[cup] milk"))
+        assertEquals(listOf(1.5), values("Add 1 1/2[cups] flour"))
+        assertEquals(listOf(2.25, 3.0), values("2 1/4[tsp] yeast, then 3[eggs]"))
+        assertEquals(listOf(1000.0), values("1,000[g] potatoes"))
+        assertEquals(listOf(12500.5), values("12,500.5[g] of something huge"))
+        assertEquals(listOf(1.5), values("1,5[l] water"))
+        assertEquals(listOf(1.75), values("1,75[l] water"))
+        // "step 3: ..." must not swallow the step number into a mixed number
+        assertEquals(listOf(0.5), values("step 3: add 1/2[cup]"))
+        // a typo'd zero denominator never produces infinity
+        assertEquals(listOf(1.0), values("1/0[cup]"))
+        // numbers without brackets are plain text
+        assertEquals(emptyList<Double>(), values("Bake at 180 degrees for 20 minutes"))
+    }
+
+    @Test
+    fun fractionsRenderAsDecimalsAndRoundTrip() {
+        val steps = listOf(Step.Text("Add 1 1/2[cups] flour and 1,000[g] water"))
+        val params = StepParser.params(steps)
+        assertEquals(listOf(1.5, 1000.0), params.map { it.baseValue })
+        assertEquals("Add 1.5 cups flour and 1000 g water", StepParser.render(steps[0], 0, params, null))
+        val applied = StepParser.applyValues(steps, listOf(1.75, 900.0))
+        assertEquals("Add 1.75[cups] flour and 900[g] water", (applied[0] as Step.Text).text)
+        assertEquals(listOf(1.75, 900.0), StepParser.baseValues(applied))
+    }
+
+    @Test
     fun roundingKeepsSensiblePrecision() {
         assertEquals(1.23, StepParser.round(1.2345), 1e-9)
         assertEquals(12.3, StepParser.round(12.345), 1e-9)

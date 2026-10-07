@@ -18,18 +18,38 @@ data class ParamSpec(
     val unit: String,
     val locked: Boolean,
     val isWait: Boolean,
+    /**
+     * Short human name of what the number measures: the words right after the unit
+     * ("water" in `1.75[cups] water`), or the label of a wait step. May be blank.
+     */
+    val name: String = "",
 ) {
-    val label: String get() = if (isWait) "wait time" else unit.ifBlank { "amount" }
+    /** Best available display label: the name, else the unit, else a generic word. */
+    val label: String
+        get() = when {
+            name.isNotBlank() -> name
+            isWait -> "wait"
+            unit.isNotBlank() -> unit
+            else -> "amount"
+        }
 }
 
 /**
  * Everything that knows how numbers are embedded in step text.
  *
  * Format: a number directly followed by a unit in square brackets, e.g. `1.75[cups]`,
- * `3 [shakes]`, `15[min]`. Decimal comma is accepted. The unit may be empty: `2[]`.
+ * `3 [shakes]`, `15[min]`. The unit may be empty: `2[]`.
+ *
+ * Accepted number spellings (group 1 of [PARAM_REGEX], parsed by [parseNumber]):
+ * - decimals with a point or a decimal comma: `1.75`, `1,5`
+ * - thousands separators: `1,000`, `12,500.5` (a comma followed by exactly three digits)
+ * - fractions: `1/2`
+ * - mixed numbers: `1 1/2`
  */
 object StepParser {
-    val PARAM_REGEX: Regex = Regex("""(\d+(?:[.,]\d+)?)\s*\[([^\]]*)\]""")
+    val PARAM_REGEX: Regex = Regex(
+        """((?:\d+\s+)?\d+/\d+|\d{1,3}(?:,\d{3})+(?:\.\d+)?|\d+(?:[.,]\d+)?)\s*\[([^\]]*)\]""",
+    )
 
     /** All parameters of [steps], in the fixed order used by trial value vectors. */
     fun params(steps: List<Step>): List<ParamSpec> {
@@ -45,6 +65,7 @@ object StepParser {
                         unit = m.groupValues[2].trim(),
                         locked = i in step.locked,
                         isWait = false,
+                        name = nameAfter(step.text, m.range.last + 1),
                     )
                 }
                 is Step.Wait -> out += ParamSpec(
@@ -55,10 +76,33 @@ object StepParser {
                     unit = "s",
                     locked = step.locked,
                     isWait = true,
+                    name = step.label.trim(),
                 )
             }
         }
         return out
+    }
+
+    private val CLAUSE_BREAK = Regex(
+        """[,.;:()\n]|\s+(?:and|then|with|until|for|to|into|in|on|over|at|while|before|after)\s+""",
+        RegexOption.IGNORE_CASE,
+    )
+    private val WHITESPACE = Regex("""\s+""")
+
+    /**
+     * The ingredient-like words that follow a parameter: the text after the closing bracket
+     * up to the next parameter or clause break, at most three words, without a leading "of".
+     * `1.75[cups] water and salt` -> "water"; `3[shakes] of salt` -> "salt".
+     */
+    internal fun nameAfter(text: String, from: Int): String {
+        if (from >= text.length) return ""
+        var rest = text.substring(from)
+        PARAM_REGEX.find(rest)?.let { rest = rest.substring(0, it.range.first) }
+        // Pad so that a break word at the very start or end ("... for ") is still recognised.
+        rest = CLAUSE_BREAK.split(" $rest ", limit = 2)[0].trim()
+        val words = WHITESPACE.split(rest).filter { it.isNotBlank() }.toMutableList()
+        if (words.firstOrNull()?.equals("of", ignoreCase = true) == true) words.removeAt(0)
+        return words.take(3).joinToString(" ")
     }
 
     fun baseValues(steps: List<Step>): List<Double> = params(steps).map { it.baseValue }
@@ -177,5 +221,20 @@ object StepParser {
         else String.format(Locale.US, "%d:%02d", m, s)
     }
 
-    private fun parseNumber(s: String): Double = s.replace(',', '.').toDoubleOrNull() ?: 0.0
+    private val MIXED_OR_FRACTION = Regex("""^(?:(\d+)\s+)?(\d+)/(\d+)$""")
+    private val THOUSANDS = Regex("""^\d{1,3}(?:,\d{3})+(?:\.\d+)?$""")
+
+    /** Parses any number spelling accepted by [PARAM_REGEX]; returns 0.0 for anything else. */
+    fun parseNumber(s: String): Double {
+        val t = s.trim()
+        MIXED_OR_FRACTION.matchEntire(t)?.let { m ->
+            val whole = m.groupValues[1].toDoubleOrNull() ?: 0.0
+            val numerator = m.groupValues[2].toDoubleOrNull() ?: 0.0
+            val denominator = m.groupValues[3].toDoubleOrNull() ?: 0.0
+            // "1/0" is a typo, not infinity: fall back to the numerator.
+            return if (denominator == 0.0) whole + numerator else whole + numerator / denominator
+        }
+        if (THOUSANDS.matches(t)) return t.replace(",", "").toDoubleOrNull() ?: 0.0
+        return t.replace(',', '.').toDoubleOrNull() ?: 0.0
+    }
 }

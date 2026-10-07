@@ -1,8 +1,8 @@
 <?xml version="1.0" encoding="utf-8"?>
-<!-- Android Auto Backup (Android 6-11): back up the recipe database and settings,
-     but not the device-bound secret store (it cannot be decrypted on another device). -->
+<!-- Android Auto Backup (Android 6-11). Only what is listed here is backed up: the recipe
+     database and the plain settings. The encrypted secret store (souschef_secrets.xml) is
+     deliberately NOT listed: its key is bound to this device and cannot be restored elsewhere. -->
 <full-backup-content>
     <include domain="database" path="souschef.db" />
     <include domain="sharedpref" path="souschef_settings.xml" />
-    <exclude domain="sharedpref" path="souschef_secrets.xml" />
 </full-backup-content>

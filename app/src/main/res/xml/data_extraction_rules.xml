@@ -1,14 +1,13 @@
 <?xml version="1.0" encoding="utf-8"?>
-<!-- Android 12+ backup rules: same policy as backup_rules.xml. -->
+<!-- Android 12+ backup rules: same policy as backup_rules.xml. Only the listed files are
+     backed up or transferred; the device-bound secret store is deliberately not listed. -->
 <data-extraction-rules>
     <cloud-backup>
         <include domain="database" path="souschef.db" />
         <include domain="sharedpref" path="souschef_settings.xml" />
-        <exclude domain="sharedpref" path="souschef_secrets.xml" />
     </cloud-backup>
     <device-transfer>
         <include domain="database" path="souschef.db" />
         <include domain="sharedpref" path="souschef_settings.xml" />
-        <exclude domain="sharedpref" path="souschef_secrets.xml" />
     </device-transfer>
 </data-extraction-rules>
