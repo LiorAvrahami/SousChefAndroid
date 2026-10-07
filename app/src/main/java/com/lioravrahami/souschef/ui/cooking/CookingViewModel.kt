@@ -18,6 +18,8 @@ import kotlinx.coroutines.flow.flowOf
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 
 /**
  * State holder of the cooking screen. All session state lives in the persisted trial
@@ -54,7 +56,8 @@ class CookingViewModel(
     val handledWaits: SnapshotStateList<Int> = mutableStateListOf()
 
     /**
-     * Becomes true once the cook moved away from the page the screen opened on; from then on
+     * Becomes true once the cook moved away from the page the screen opened on (or right away
+     * for a fresh session on its first page); from then on
      * a wait page that becomes the settled page starts its timer by itself.
      */
     var autoStartArmed by mutableStateOf(false)
@@ -66,25 +69,44 @@ class CookingViewModel(
 
     private var openedOnPage: Int? = null
 
-    /** Called for every settled pager page: persists it and arms auto-start after the first move. */
-    fun onPageSettled(page: Int) {
+    /**
+     * Every session write is a read-modify-write of the trial row; running them one at a
+     * time (in launch order) keeps e.g. a page change from overwriting a just-started timer.
+     */
+    private val writeLock = Mutex()
+
+    private fun write(block: suspend () -> Unit) {
+        viewModelScope.launch { writeLock.withLock { block() } }
+    }
+
+    /**
+     * Called for every settled pager page: persists it and arms auto-start after the first
+     * move. [freshSession] says the session has never run a timer and sits on its first page,
+     * so a wait as the very first step may start by itself too.
+     */
+    fun onPageSettled(page: Int, freshSession: Boolean) {
         val first = openedOnPage
-        if (first == null) openedOnPage = page else if (page != first) autoStartArmed = true
-        viewModelScope.launch { sessions.setStep(trialId, page) }
+        if (first == null) {
+            openedOnPage = page
+            if (freshSession && page == 0) autoStartArmed = true
+        } else if (page != first) {
+            autoStartArmed = true
+        }
+        write { sessions.setStep(trialId, page) }
     }
 
     /** Starts (or restarts) the timer of wait step [stepIndex] for [seconds], silencing any alarm first. */
     fun startWait(stepIndex: Int, seconds: Int) {
         if (stepIndex !in handledWaits) handledWaits.add(stepIndex)
         container.timerScheduler.stopRinging()
-        viewModelScope.launch { sessions.startWait(trialId, stepIndex, seconds) }
+        write { sessions.startWait(trialId, stepIndex, seconds) }
     }
 
     /** Auto-start of a wait page; marks the step so it never auto-starts twice in this visit. */
     fun autoStartWait(stepIndex: Int, seconds: Int) {
         if (stepIndex in handledWaits) return
         handledWaits.add(stepIndex)
-        viewModelScope.launch { sessions.startWait(trialId, stepIndex, seconds) }
+        write { sessions.startWait(trialId, stepIndex, seconds) }
     }
 
     /** Remembers that the cook moved past wait step [stepIndex] without using its timer. */
@@ -95,14 +117,14 @@ class CookingViewModel(
     /** Clears the session's timer (running or finished), silences the alarm, and remembers [stepIndex] as done. */
     fun clearWait(stepIndex: Int?) {
         if (stepIndex != null && stepIndex !in handledWaits) handledWaits.add(stepIndex)
-        viewModelScope.launch { sessions.clearWait(trialId) }
+        write { sessions.clearWait(trialId) }
     }
 
     /** Marks cooking as finished, then calls [onDone] (which navigates to the rating screen). */
     fun finish(onDone: () -> Unit) {
         if (leaving) return
         leaving = true
-        viewModelScope.launch {
+        write {
             sessions.finishCooking(trialId)
             onDone()
         }
@@ -112,7 +134,7 @@ class CookingViewModel(
     fun abort(onDone: () -> Unit) {
         if (leaving) return
         leaving = true
-        viewModelScope.launch {
+        write {
             sessions.abort(trialId)
             onDone()
         }

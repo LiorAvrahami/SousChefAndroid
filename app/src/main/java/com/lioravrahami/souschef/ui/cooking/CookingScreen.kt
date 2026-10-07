@@ -33,6 +33,7 @@ import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.produceState
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.rememberUpdatedState
@@ -59,6 +60,7 @@ import com.lioravrahami.souschef.data.model.TrialStatus
 import com.lioravrahami.souschef.data.settings.AppSettings
 import com.lioravrahami.souschef.ui.TestTags
 import com.lioravrahami.souschef.ui.components.BigButton
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 
 /** How far the cook has to drag down on a page to open the overview. */
@@ -153,7 +155,10 @@ private fun CookingSessionContent(
     val ringing by container.timerScheduler.isRinging.collectAsStateWithLifecycle()
 
     LaunchedEffect(pagerState) {
-        snapshotFlow { pagerState.settledPage }.collect { viewModel.onPageSettled(it) }
+        snapshotFlow { pagerState.settledPage }.collect { page ->
+            val t = latestSession.trial
+            viewModel.onPageSettled(page, freshSession = t.currentStep == 0 && t.timerStartedAt == null)
+        }
     }
     // Back opens the overview instead of leaving the session by accident.
     BackHandler(enabled = !showSheet) { showSheet = true }
@@ -180,7 +185,9 @@ private fun CookingSessionContent(
             .systemBarsPadding(),
     ) {
         val onTimerPage = timerStep != null && settledPage == timerStep
-        if (ringing && !onTimerPage) {
+        // The timer's own page offers "Stop alarm & continue" only once its time is up.
+        val timesUp = rememberIsPast(trial.timerEndAt)
+        if (ringing && !(onTimerPage && timesUp)) {
             StopAlarmBar(onClick = { viewModel.clearWait(timerStep) })
         } else if (timerStep != null && !onTimerPage) {
             OtherTimerBar(
@@ -397,6 +404,22 @@ private fun OtherTimerBar(timerStep: Int, endAt: Long, onClick: () -> Unit) {
             )
         }
     }
+}
+
+/** Whether the wall-clock time [endAtMillis] has passed; flips exactly once, without ticking. */
+@Composable
+private fun rememberIsPast(endAtMillis: Long?): Boolean {
+    val isPast by produceState(
+        initialValue = endAtMillis != null && endAtMillis <= System.currentTimeMillis(),
+        endAtMillis,
+    ) {
+        value = endAtMillis != null && endAtMillis <= System.currentTimeMillis()
+        if (endAtMillis != null && !value) {
+            delay(endAtMillis - System.currentTimeMillis())
+            value = true
+        }
+    }
+    return isPast
 }
 
 @Composable
