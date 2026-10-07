@@ -50,6 +50,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import androidx.lifecycle.compose.LifecycleResumeEffect
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
 import androidx.lifecycle.viewmodel.initializer
@@ -154,6 +155,13 @@ private fun CookingSessionContent(
     var confirmExit by rememberSaveable { mutableStateOf(false) }
     val ringing by container.timerScheduler.isRinging.collectAsStateWithLifecycle()
 
+    // Coming back to the session (after a force-stop, an update, or granting exact alarms)
+    // re-registers the system alarm of a running wait, or rings a wait that ended meanwhile.
+    LifecycleResumeEffect(Unit) {
+        val job = scope.launch { container.timerScheduler.ensureScheduled() }
+        onPauseOrDispose { job.cancel() }
+    }
+
     LaunchedEffect(pagerState) {
         snapshotFlow { pagerState.settledPage }.collect { page ->
             val t = latestSession.trial
@@ -190,10 +198,13 @@ private fun CookingSessionContent(
         if (ringing && !(onTimerPage && timesUp)) {
             StopAlarmBar(onClick = { viewModel.clearWait(timerStep) })
         } else if (timerStep != null && !onTimerPage) {
+            // Ringing is false here: a finished timer is a leftover silenced elsewhere
+            // (notification, auto-stop, missed alarm), so the bar clears it in place.
             OtherTimerBar(
                 timerStep = timerStep,
                 endAt = trial.timerEndAt ?: 0L,
-                onClick = { goTo(timerStep) },
+                onGoBack = { goTo(timerStep) },
+                onDismiss = { viewModel.clearWait(timerStep) },
             )
         }
         ReliabilityBanner(
@@ -270,7 +281,15 @@ private fun CookingSessionContent(
                         isSettled = settledPage == page,
                         autoStartArmed = viewModel.autoStartArmed,
                         alreadyHandled = page in viewModel.handledWaits,
-                        onAutoStart = { seconds -> viewModel.autoStartWait(page, seconds) },
+                        onAutoStart = { seconds ->
+                            // Replacing another step's finished timer: that step is done, so it
+                            // must not start again by itself when the cook swipes back to it.
+                            val t = latestSession.trial
+                            t.timerStepIndex
+                                ?.takeIf { it != page && t.timerEndAt != null }
+                                ?.let(viewModel::markHandled)
+                            viewModel.autoStartWait(page, seconds)
+                        },
                         onStart = { seconds -> viewModel.startWait(page, seconds) },
                         onClearAndAdvance = {
                             viewModel.clearWait(page)
@@ -280,6 +299,7 @@ private fun CookingSessionContent(
                             viewModel.markHandled(page)
                             goTo(page + 1)
                         },
+                        alarmRinging = ringing,
                     )
                 }
             }
@@ -379,13 +399,16 @@ private fun StopAlarmBar(onClick: () -> Unit) {
     )
 }
 
-/** Compact bar on other pages while a step's timer runs; tapping jumps back to that step. */
+/**
+ * Compact bar on other pages: while a step's timer runs, tapping jumps back to that step
+ * ([onGoBack]); once it has finished (and is not ringing), tapping clears it ([onDismiss]).
+ */
 @Composable
-private fun OtherTimerBar(timerStep: Int, endAt: Long, onClick: () -> Unit) {
+private fun OtherTimerBar(timerStep: Int, endAt: Long, onGoBack: () -> Unit, onDismiss: () -> Unit) {
     val now = rememberWallClock(ticking = endAt > System.currentTimeMillis())
     val remaining = WaitClock.remainingSeconds(endAt, now)
     Surface(
-        onClick = onClick,
+        onClick = if (remaining > 0) onGoBack else onDismiss,
         color = if (remaining > 0) MaterialTheme.colorScheme.tertiaryContainer else MaterialTheme.colorScheme.errorContainer,
         contentColor = if (remaining > 0) MaterialTheme.colorScheme.onTertiaryContainer else MaterialTheme.colorScheme.onErrorContainer,
         shape = MaterialTheme.shapes.medium,
@@ -408,7 +431,7 @@ private fun OtherTimerBar(timerStep: Int, endAt: Long, onClick: () -> Unit) {
 
 /** Whether the wall-clock time [endAtMillis] has passed; flips exactly once, without ticking. */
 @Composable
-private fun rememberIsPast(endAtMillis: Long?): Boolean {
+internal fun rememberIsPast(endAtMillis: Long?): Boolean {
     val isPast by produceState(
         initialValue = endAtMillis != null && endAtMillis <= System.currentTimeMillis(),
         endAtMillis,

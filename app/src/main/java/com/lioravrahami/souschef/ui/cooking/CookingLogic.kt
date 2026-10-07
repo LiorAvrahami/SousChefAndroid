@@ -137,16 +137,88 @@ object WaitClock {
     }
 
     /**
+     * How long after its end a timer of another step must have been silent before a wait page
+     * may replace it. Covers the moment between the end time and the alarm starting to ring
+     * (the alarm could otherwise be cancelled before it was ever heard).
+     */
+    const val FINISHED_GRACE_MILLIS: Long = 15_000L
+
+    /**
+     * Whether the timer described by [timerStepIndex] / [timerEndAt] belongs to another step
+     * than [stepIndex], has ended at least [FINISHED_GRACE_MILLIS] ago and is not ringing: it is
+     * only a leftover (e.g. silenced from the notification) and may be replaced.
+     */
+    fun isSilencedLeftover(
+        stepIndex: Int,
+        timerStepIndex: Int?,
+        timerEndAt: Long?,
+        nowMillis: Long,
+        ringing: Boolean,
+    ): Boolean =
+        timerEndAt != null &&
+            timerStepIndex != stepIndex &&
+            !ringing &&
+            timerEndAt + FINISHED_GRACE_MILLIS <= nowMillis
+
+    /**
      * Whether a wait page should start its own timer automatically.
      *
      * Only the settled page may do so ([isSettled]); only when the cook moved to it during
      * this visit of the screen ([armed]) — the page the screen opens on may be a wait that
      * was already completed from the alarm notification; only once per step and visit
-     * ([alreadyHandled]); and never while any timer exists ([timerEndAt] non-null), because
-     * the app has a single alarm and starting would silently replace another step's timer.
+     * ([alreadyHandled]); and never while another timer still matters: a running timer, a
+     * ringing alarm, or this step's own finished timer. A finished, silent timer of another
+     * step ([isSilencedLeftover]) does not block the start, otherwise an alarm stopped from the
+     * notification would keep every later wait from starting.
+     *
+     * The defaults of [stepIndex], [timerStepIndex], [nowMillis] and [ringing] keep the strict
+     * rule (start only when no timer exists at all).
      */
-    fun shouldAutoStart(isSettled: Boolean, armed: Boolean, alreadyHandled: Boolean, timerEndAt: Long?): Boolean =
-        isSettled && armed && !alreadyHandled && timerEndAt == null
+    fun shouldAutoStart(
+        isSettled: Boolean,
+        armed: Boolean,
+        alreadyHandled: Boolean,
+        timerEndAt: Long?,
+        stepIndex: Int = -1,
+        timerStepIndex: Int? = null,
+        nowMillis: Long = Long.MIN_VALUE,
+        ringing: Boolean = true,
+    ): Boolean =
+        isSettled && armed && !alreadyHandled &&
+            (timerEndAt == null || isSilencedLeftover(stepIndex, timerStepIndex, timerEndAt, nowMillis, ringing))
+}
+
+/**
+ * Sizing of the countdown clock inside its ring: the clock is shrunk (never enlarged) so it
+ * fits the space left inside the ring, but not below [minScale] of its theme size.
+ */
+object ClockSizing {
+    /** Share of the ring's side usable for the clock's width (inside the stroke, with a margin). */
+    const val WIDTH_SHARE: Float = 0.74f
+
+    /** Share of the ring's side usable for the clock and its caption together. */
+    const val HEIGHT_SHARE: Float = 0.62f
+
+    /**
+     * The factor (at most 1) to apply to a clock measured at [measuredWidth] x [measuredHeight]
+     * so it fits [availableWidth] x [availableHeight]; never below [minScale].
+     */
+    fun scale(
+        measuredWidth: Float,
+        measuredHeight: Float,
+        availableWidth: Float,
+        availableHeight: Float,
+        minScale: Float,
+    ): Float {
+        var s = 1f
+        if (measuredWidth > 0f) s = minOf(s, availableWidth / measuredWidth)
+        if (measuredHeight > 0f) s = minOf(s, availableHeight / measuredHeight)
+        val floor = minScale.coerceIn(0f, 1f)
+        return if (s.isNaN()) 1f else s.coerceIn(floor, 1f)
+    }
+
+    /** "12:34" -> "00:00": a template whose width does not change every second. */
+    fun template(clock: String): String = clock.map { if (it.isDigit()) '0' else it }.joinToString("")
 }
 
 /** Display texts shared by the cooking pages. */
@@ -163,11 +235,14 @@ object CookingTexts {
     fun changeLine(changes: List<ChangeSummary.Change>): String? =
         if (changes.isEmpty()) null else "This time: " + changes.joinToString(" · ") { it.text }
 
-    /** Text of the compact bar shown on other pages while a step's timer runs or has finished. */
+    /**
+     * Text of the compact bar shown on other pages while a step's timer runs (tap jumps back)
+     * or has finished and is silent (tap dismisses it).
+     */
     fun otherTimerBar(timerStepIndex: Int, remainingSeconds: Int): String =
         if (remainingSeconds > 0) {
             "Timer running for step ${timerStepIndex + 1} — ${StepParser.formatClock(remainingSeconds)} left"
         } else {
-            "Timer for step ${timerStepIndex + 1} is done — tap to go back"
+            "Timer for step ${timerStepIndex + 1} is done — tap to dismiss"
         }
 }

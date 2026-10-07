@@ -96,12 +96,16 @@ fun AiSection(container: AppContainer, settingsTick: Int) {
             text = "Save key",
             enabled = keyInput.isNotBlank(),
             onClick = {
-                settings.openRouterApiKey = keyInput.trim()
-                keyInput = ""
-                showKey = false
-                if (settings.hasApiKey) {
+                val entered = keyInput.trim()
+                settings.openRouterApiKey = entered
+                // SecretStore keeps the previous key when encryption fails, so compare with
+                // what was typed rather than checking that some key exists.
+                if (settings.openRouterApiKey == entered) {
+                    keyInput = ""
+                    showKey = false
                     Toast.makeText(context, "Key saved", Toast.LENGTH_SHORT).show()
                 } else {
+                    // Keep the typed key so the user can simply try again.
                     dialog = "Key not saved" to "The phone's secure storage refused to store the key. Please try again."
                 }
             },

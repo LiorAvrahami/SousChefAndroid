@@ -118,14 +118,27 @@ class LlmOptimizer internal constructor(
             CheckerVerdict.Approved -> build(context, proposal, Review.Approved)
             is CheckerVerdict.Rejected -> {
                 val reason = verdict.reason.ifBlank { "the change looked too large or unsafe" }.trimEnd('.')
+                val rejected = "The reviewing AI rejected the suggestion: $reason. Try again."
                 val revised = verdict.revised?.let {
                     try {
                         validator.validate(it)
                     } catch (e: LlmException) {
                         null
                     }
-                } ?: throw LlmException("The reviewing AI rejected the suggestion: $reason. Try again.")
-                build(context, revised, Review.Revised(reason), original = proposal)
+                }
+                when {
+                    revised != null -> build(context, revised, Review.Revised(reason), original = proposal)
+                    // No usable revision (cheap checkers often drop the locked values): keep the paid-for
+                    // proposal, which already passed every code check, but shrink it to a normal step size.
+                    proposal is ValidProposal.Values -> {
+                        val maxRelative = OBJECTION_CAP_FACTOR * boldness
+                        val (capped, limited) = validator.cap(proposal, maxRelative)
+                        if (capped.changes.isEmpty()) throw LlmException(rejected)
+                        build(context, capped, Review.Objected(reason, LlmPrompts.percent(maxRelative), limited))
+                    }
+                    // A structural change cannot be scaled down safely.
+                    else -> throw LlmException(rejected)
+                }
             }
             CheckerVerdict.Unreadable, null -> {
                 val unavailable = if (verdict == null) {
@@ -152,6 +165,9 @@ class LlmOptimizer internal constructor(
         data object Approved : Review()
         data class Revised(val reason: String) : Review()
         data class Unchecked(val why: String, val limit: String?, val limited: Boolean) : Review()
+
+        /** The checker said "not ok" without a usable revision; code limited each change to [limit]. */
+        data class Objected(val reason: String, val limit: String, val limited: Boolean) : Review()
     }
 
     private fun build(
@@ -169,10 +185,19 @@ class LlmOptimizer internal constructor(
                 review.limit != null -> "${review.why}; the change is within the usual ±${review.limit} limit."
                 else -> "${review.why}; read the new steps carefully before cooking."
             }
+            is Review.Objected -> if (review.limited) {
+                "A second AI objected: ${review.reason}. It offered no usable alternative, " +
+                    "so each change was limited to ±${review.limit}. Weigh its concern before cooking."
+            } else {
+                "A second AI objected: ${review.reason}. It offered no usable alternative; " +
+                    "the change is already within ±${review.limit}. Weigh its concern before cooking."
+            }
         }
         val adjusted = when (review) {
             is Review.Revised -> " (toned down by the reviewer)"
             is Review.Unchecked -> if (review.limited) " (limited for safety)" else ""
+            is Review.Objected ->
+                if (review.limited) " (limited after the reviewer's objection)" else " (the reviewer had doubts)"
             Review.Approved -> ""
         }
 
@@ -180,7 +205,9 @@ class LlmOptimizer internal constructor(
             is ValidProposal.Values -> {
                 val changeLine = proposal.changes.joinToString("; ") { it.text }
                 // A summary written for other numbers would mislead: use the real changes when code limited them.
-                val headline = if (review is Review.Unchecked && review.limited) {
+                val limitedInCode = (review is Review.Unchecked && review.limited) ||
+                    (review is Review.Objected && review.limited)
+                val headline = if (limitedInCode) {
                     changeLine
                 } else {
                     proposal.raw.summary.oneParagraph().ifBlank { changeLine }
@@ -238,6 +265,12 @@ class LlmOptimizer internal constructor(
         const val SUGGESTER_ATTEMPTS = 2
         const val MAX_TOKENS = 2000
         const val CAP_FACTOR = 3.0
+
+        /**
+         * Limit (× boldness) when the checker objected without a usable revision. Tighter than
+         * [CAP_FACTOR], which is the checker's own limit: a proposal it rejected must actually shrink.
+         */
+        const val OBJECTION_CAP_FACTOR = 1.0
         const val MIN_BOLDNESS = 0.02
         const val MAX_BOLDNESS = 0.8
         const val DEFAULT_BOLDNESS = 0.15

@@ -37,6 +37,10 @@ data class Proposal(
  * nudge of a few values. With probability [OptimizerSettings.explorationRate] it makes a
  * *global* jump instead, so the search does not get stuck around one good point.
  *
+ * Every proposed value stays within [MIN_FACTOR]–[MAX_FACTOR] times the value it starts from,
+ * so an amount or a wait never collapses to 0 or balloons, and values are rounded to what a
+ * cook can measure (see [roundValue]).
+ *
  * All randomness comes from [random], so a seeded [Random] gives reproducible proposals.
  */
 class ClassicalOptimizer(private val random: Random = Random.Default) {
@@ -281,14 +285,32 @@ class ClassicalOptimizer(private val random: Random = Random.Default) {
         return candidate
     }
 
-    /** Locked values come back from [center] untouched; the others are made non-negative and rounded. */
+    /** Locked values come back from [center] untouched; the others are bounded and rounded. */
     private fun clean(data: VersionData, center: List<Double>, raw: List<Double>): List<Double> =
         data.params.map { p ->
             val i = p.index
             if (p.locked) return@map center[i]
-            val v = raw[i].takeIf { it.isFinite() } ?: center[i]
-            roundValue(p, v.coerceAtLeast(0.0))
+            val v = bound(data, center, i, raw[i].takeIf { it.isFinite() } ?: center[i])
+            val rounded = roundValue(p, v)
+            // A tiny positive value must not round down to nothing: use the smallest measurable step.
+            if (rounded <= 0.0 && v > 0.0) resolution(p, v) else rounded
         }
+
+    /**
+     * Keeps value [v] of parameter [i] within reach of where the proposal starts: at least
+     * [MIN_FACTOR] and at most [MAX_FACTOR] times the reference (the value at [center], else
+     * the written value when the center is 0), so an amount or a wait never drops to 0 nor
+     * jumps to several times its size. A center value of 0 keeps 0 as the lower bound (the
+     * value stays where it is when it is not tweaked); with no positive reference at all the
+     * value is only kept non-negative.
+     */
+    private fun bound(data: VersionData, center: List<Double>, i: Int, v: Double): Double {
+        val c = center[i]
+        val reference = if (c > 0.0) c else data.base[i]
+        if (!(reference > 0.0)) return v.coerceAtLeast(0.0)
+        val low = if (c > 0.0) reference * MIN_FACTOR else 0.0
+        return v.coerceIn(low, reference * MAX_FACTOR)
+    }
 
     private fun isRepeat(data: VersionData, center: List<Double>, values: List<Double>): Boolean =
         sameValues(data.params, values, center) || data.tried.any { sameValues(data.params, values, it) }
@@ -332,6 +354,15 @@ class ClassicalOptimizer(private val random: Random = Random.Default) {
         private const val MAX_FALLBACK_STEPS = 50
         private const val SAME_EPSILON = 1e-6
 
+        /** A proposal never goes below this fraction of the value it starts from. */
+        const val MIN_FACTOR = 0.25
+
+        /** A proposal never goes above this multiple of the value it starts from. */
+        const val MAX_FACTOR = 3.0
+
+        /** Whole-number amounts below this move in half steps; from here up in whole steps. */
+        private const val HALF_STEP_LIMIT = 10.0
+
         /** Whether [trial]'s values line up with [version]'s parameters and are all finite. */
         fun isValid(trial: Trial, version: RecipeVersion): Boolean =
             isValid(trial, StepParser.params(version.steps))
@@ -340,18 +371,28 @@ class ClassicalOptimizer(private val random: Random = Random.Default) {
             trial.values.size == params.size && trial.values.all { it.isFinite() }
 
         /**
-         * Rounds a proposed value: wait durations to whole seconds (multiples of 5 s from one
-         * minute up), everything else through [StepParser.round].
+         * Rounds a proposed value to something a cook can measure: wait durations to whole
+         * seconds (multiples of 5 s from one minute up); amounts written as whole numbers
+         * (`2[eggs]`, `180[°C]`) to halves below 10 and whole numbers from 10 up; everything
+         * else through [StepParser.round].
          */
         fun roundValue(param: ParamSpec, value: Double): Double {
-            if (!param.isWait) return StepParser.round(value)
-            val seconds = value.roundToInt()
-            return if (seconds >= 60) ((value / 5.0).roundToInt() * 5).toDouble() else seconds.toDouble()
+            if (!value.isFinite()) return StepParser.round(value)
+            if (param.isWait) {
+                val seconds = Math.round(value)
+                return if (seconds >= 60) (Math.round(value / 5.0) * 5).toDouble() else seconds.toDouble()
+            }
+            if (!isWholeNumber(param.baseValue)) return StepParser.round(value)
+            return if (abs(value) < HALF_STEP_LIMIT) Math.round(value * 2.0) / 2.0 else Math.round(value).toDouble()
         }
+
+        /** Whether [value] is a finite whole number, i.e. the cook wrote it without a fraction. */
+        private fun isWholeNumber(value: Double): Boolean = value.isFinite() && value == Math.rint(value)
 
         /** The smallest change of [param] around [value] that survives [roundValue]. */
         private fun resolution(param: ParamSpec, value: Double): Double = when {
             param.isWait -> if (value >= 60.0) 5.0 else 1.0
+            isWholeNumber(param.baseValue) -> if (abs(value) >= HALF_STEP_LIMIT) 1.0 else 0.5
             abs(value) >= 100 -> 1.0
             abs(value) >= 10 -> 0.1
             else -> 0.01

@@ -7,6 +7,7 @@ import com.lioravrahami.souschef.data.model.Step
 import com.lioravrahami.souschef.data.model.Trial
 import com.lioravrahami.souschef.data.model.TrialMode
 import com.lioravrahami.souschef.data.model.TrialStatus
+import com.lioravrahami.souschef.ui.cooking.ClockSizing
 import com.lioravrahami.souschef.ui.cooking.CookingStates
 import com.lioravrahami.souschef.ui.cooking.CookingTexts
 import com.lioravrahami.souschef.ui.cooking.CookingUiState
@@ -156,6 +157,75 @@ class CookingLogicTest {
         assertFalse(WaitClock.shouldAutoStart(isSettled = true, armed = true, alreadyHandled = false, timerEndAt = 5L))
     }
 
+    private fun autoStart(timerStepIndex: Int?, timerEndAt: Long?, now: Long, ringing: Boolean, stepIndex: Int = 4) =
+        WaitClock.shouldAutoStart(
+            isSettled = true,
+            armed = true,
+            alreadyHandled = false,
+            timerEndAt = timerEndAt,
+            stepIndex = stepIndex,
+            timerStepIndex = timerStepIndex,
+            nowMillis = now,
+            ringing = ringing,
+        )
+
+    @Test
+    fun silencedFinishedTimerOfAnotherStepDoesNotBlockAutoStart() {
+        val end = 100_000L
+        val later = end + WaitClock.FINISHED_GRACE_MILLIS
+        // Another step's finished, silent timer (stopped from the notification): start.
+        assertTrue(autoStart(timerStepIndex = 2, timerEndAt = end, now = later, ringing = false))
+        // ...but not while its alarm is still sounding.
+        assertFalse(autoStart(timerStepIndex = 2, timerEndAt = end, now = later, ringing = true))
+        // ...nor right after its end, before the alarm had a chance to ring.
+        assertFalse(autoStart(timerStepIndex = 2, timerEndAt = end, now = end + 1_000, ringing = false))
+        // Another step's running timer still blocks.
+        assertFalse(autoStart(timerStepIndex = 2, timerEndAt = end, now = end - 1, ringing = false))
+        // This step's own finished timer never restarts by itself.
+        assertFalse(autoStart(timerStepIndex = 4, timerEndAt = end, now = later, ringing = false))
+        // No timer at all: start.
+        assertTrue(autoStart(timerStepIndex = null, timerEndAt = null, now = later, ringing = true))
+        // Settled / armed / handled still apply.
+        assertFalse(
+            WaitClock.shouldAutoStart(
+                isSettled = true, armed = true, alreadyHandled = true, timerEndAt = end,
+                stepIndex = 4, timerStepIndex = 2, nowMillis = later, ringing = false,
+            ),
+        )
+    }
+
+    @Test
+    fun silencedLeftoverDetection() {
+        val end = 50_000L
+        val later = end + WaitClock.FINISHED_GRACE_MILLIS
+        assertTrue(WaitClock.isSilencedLeftover(1, timerStepIndex = 0, timerEndAt = end, nowMillis = later, ringing = false))
+        assertFalse(WaitClock.isSilencedLeftover(1, timerStepIndex = 1, timerEndAt = end, nowMillis = later, ringing = false))
+        assertFalse(WaitClock.isSilencedLeftover(1, timerStepIndex = 0, timerEndAt = null, nowMillis = later, ringing = false))
+        assertFalse(WaitClock.isSilencedLeftover(1, timerStepIndex = 0, timerEndAt = end, nowMillis = later, ringing = true))
+    }
+
+    // ---------------------------------------------------------------- clock sizing
+
+    @Test
+    fun clockScaleShrinksToFitButNeverGrowsOrGoesBelowTheMinimum() {
+        // Fits: unchanged.
+        assertEquals(1f, ClockSizing.scale(100f, 50f, 200f, 100f, minScale = 0.3f), 1e-6f)
+        // Too wide: shrinks to the width.
+        assertEquals(0.5f, ClockSizing.scale(400f, 50f, 200f, 100f, minScale = 0.3f), 1e-6f)
+        // Too tall: shrinks to the height.
+        assertEquals(0.25f, ClockSizing.scale(100f, 400f, 200f, 100f, minScale = 0.1f), 1e-6f)
+        // Never below the minimum.
+        assertEquals(0.3f, ClockSizing.scale(1000f, 50f, 100f, 100f, minScale = 0.3f), 1e-6f)
+        // Nothing measured: unchanged.
+        assertEquals(1f, ClockSizing.scale(0f, 0f, 10f, 10f, minScale = 0.3f), 1e-6f)
+    }
+
+    @Test
+    fun clockTemplateKeepsTheShapeOfTheClock() {
+        assertEquals("00:00", ClockSizing.template("12:34"))
+        assertEquals("0:00:00", ClockSizing.template("1:05:00"))
+    }
+
     // ---------------------------------------------------------------- texts
 
     @Test
@@ -180,6 +250,6 @@ class CookingLogicTest {
     @Test
     fun otherTimerBarText() {
         assertEquals("Timer running for step 2 — 3:20 left", CookingTexts.otherTimerBar(1, 200))
-        assertEquals("Timer for step 2 is done — tap to go back", CookingTexts.otherTimerBar(1, 0))
+        assertEquals("Timer for step 2 is done — tap to dismiss", CookingTexts.otherTimerBar(1, 0))
     }
 }

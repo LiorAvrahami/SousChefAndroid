@@ -1,5 +1,6 @@
 package com.lioravrahami.souschef.ui.editor
 
+import androidx.lifecycle.SavedStateHandle
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.lioravrahami.souschef.AppContainer
@@ -10,16 +11,20 @@ import com.lioravrahami.souschef.data.model.Step
 import com.lioravrahami.souschef.data.model.VersionOrigin
 import com.lioravrahami.souschef.data.model.newId
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
+import kotlinx.serialization.Serializable
 
 /**
  * A step being edited in the step editor. [index] is the step's position, or null for a new
  * step that is appended on Done. [step] is the step as it was when editing started.
  */
+@Serializable
 data class StepEdit(val index: Int?, val step: Step)
 
 /** Shown when saving changed steps of an existing recipe: they become a new version. */
@@ -46,16 +51,23 @@ data class EditorUiState(
     val error: String? = null,
     /** Set once everything is stored; the screen then leaves with this recipe id. */
     val savedRecipeId: String? = null,
+    /** An informational message (e.g. unsaved changes were brought back). */
+    val notice: String? = null,
 )
 
 /**
  * State holder of the recipe editor. Creates a new recipe when [recipeId] is null; otherwise
  * edits that recipe with steps starting from [baseVersionId] (or the latest version).
+ *
+ * Unsaved work is mirrored into [savedState] so that it survives process death, and is
+ * stashed in [EditorDraftStash] when the editor is closed by navigation without the user
+ * saving or discarding it.
  */
 class RecipeEditorViewModel(
     private val container: AppContainer,
     private val recipeId: String?,
     private val baseVersionId: String?,
+    private val savedState: SavedStateHandle = SavedStateHandle(),
 ) : ViewModel() {
     private val repository get() = container.repository
 
@@ -75,7 +87,40 @@ class RecipeEditorViewModel(
     private var versionCount = 0
     private var initial = Content("", "", emptyList(), emptyList())
 
+    /** True when the content shown is the user's (loaded, restored, or a new recipe). */
+    private var contentReady = recipeId == null
+
+    /** True when a draft was restored and must not be overwritten by [load]. */
+    private var hasDraft = false
+
+    /** The base version the draft belongs to (see [EditorDraft.baseVersionId]). */
+    private var draftBaseId: String? = null
+
+    /** Set when the user chose to throw the changes away. */
+    private var discarded = false
+
+    private val stashKey = EditorDraftStash.keyFor(recipeId)
+
     init {
+        val fromHandle = EditorDrafts.decode(savedState.get<String>(KEY_DRAFT))
+        val fromStash = if (fromHandle == null && recipeId != null) EditorDraftStash.take(stashKey) else null
+        val draft = fromHandle ?: fromStash
+        if (draft != null) {
+            hasDraft = true
+            contentReady = true
+            draftBaseId = draft.baseVersionId
+            _state.update {
+                it.copy(
+                    name = draft.name,
+                    notes = draft.notes,
+                    customAxes = draft.customAxes,
+                    steps = draft.steps,
+                    editing = draft.editing,
+                    notice = if (fromStash != null) RESTORED_NOTICE else null,
+                ).withDirty()
+            }
+            saveDraft()
+        }
         if (recipeId != null) viewModelScope.launch { load(recipeId) }
     }
 
@@ -92,30 +137,62 @@ class RecipeEditorViewModel(
             _state.update { it.copy(loading = false, loadError = "This recipe no longer exists.") }
             return
         }
-        val base = baseVersionId?.let(details::version) ?: details.latestVersion()
+        val wantedBase = if (hasDraft) draftBaseId ?: baseVersionId else baseVersionId
+        val base = wantedBase?.let(details::version) ?: details.latestVersion()
         recipe = details.recipe
         baseVersion = base
+        draftBaseId = base?.id
         versionCount = details.versions.size
         initial = Content(details.recipe.name, details.recipe.notes, details.recipe.customAxes, base?.steps.orEmpty())
         _state.update {
-            it.copy(
-                loading = false,
-                name = initial.name,
-                notes = initial.notes,
-                customAxes = initial.customAxes,
-                steps = initial.steps,
-                baseVersionName = base?.name,
-                dirty = false,
-            )
+            if (hasDraft) {
+                // Keep the restored draft; only compare it with what is stored.
+                it.copy(loading = false, baseVersionName = base?.name).withDirty()
+            } else {
+                it.copy(
+                    loading = false,
+                    name = initial.name,
+                    notes = initial.notes,
+                    customAxes = initial.customAxes,
+                    steps = initial.steps,
+                    baseVersionName = base?.name,
+                    dirty = false,
+                )
+            }
         }
+        contentReady = true
+        saveDraft()
     }
 
     private fun EditorUiState.content() = Content(name, notes, customAxes, steps)
 
-    /** Applies an edit of the recipe content and recomputes [EditorUiState.dirty]. */
-    private fun edit(block: (EditorUiState) -> EditorUiState) {
-        _state.update { old -> block(old).let { it.copy(dirty = it.content() != initial) } }
+    private fun EditorUiState.withDirty() = copy(dirty = content() != initial)
+
+    private fun EditorUiState.toDraft() = EditorDraft(name, notes, customAxes, steps, editing, draftBaseId)
+
+    /**
+     * Mirrors the unsaved work into the SavedStateHandle. Never writes before the real
+     * content is shown, so a half-loaded (empty) editor cannot overwrite a stored draft.
+     */
+    private fun saveDraft() {
+        if (!contentReady || discarded) return
+        val s = _state.value
+        if (s.loadError != null || s.savedRecipeId != null) return
+        if (s.dirty || s.editing != null) {
+            savedState[KEY_DRAFT] = EditorDrafts.encode(s.toDraft())
+        } else {
+            savedState.remove<String>(KEY_DRAFT)
+        }
     }
+
+    /** Applies a state change and mirrors the draft. */
+    private fun change(block: (EditorUiState) -> EditorUiState) {
+        _state.update(block)
+        saveDraft()
+    }
+
+    /** Applies an edit of the recipe content and recomputes [EditorUiState.dirty]. */
+    private fun edit(block: (EditorUiState) -> EditorUiState) = change { old -> block(old).withDirty() }
 
     /** Updates the recipe name as typed. */
     fun setName(name: String) = edit { it.copy(name = name) }
@@ -135,20 +212,20 @@ class RecipeEditorViewModel(
     fun removeAxis(id: String) = edit { s -> s.copy(customAxes = s.customAxes.filterNot { it.id == id }) }
 
     /** Opens the text-step editor for a new step. */
-    fun startAddText() = _state.update { it.copy(editing = StepEdit(null, Step.Text(""))) }
+    fun startAddText() = change { it.copy(editing = StepEdit(null, Step.Text(""))) }
 
     /** Opens the wait-step editor for a new 5-minute wait the optimizer may change. */
-    fun startAddWait() = _state.update {
+    fun startAddWait() = change {
         it.copy(editing = StepEdit(null, Step.Wait(label = "", seconds = EditorRules.NEW_WAIT_SECONDS, locked = false)))
     }
 
     /** Opens the matching editor for the step at [index]. */
-    fun startEdit(index: Int) = _state.update { s ->
+    fun startEdit(index: Int) = change { s ->
         s.steps.getOrNull(index)?.let { s.copy(editing = StepEdit(index, it)) } ?: s
     }
 
     /** Closes the step editor without changing the steps. */
-    fun cancelEdit() = _state.update { it.copy(editing = null) }
+    fun cancelEdit() = change { it.copy(editing = null) }
 
     /** Stores the edited [step] (replacing the edited one, or appending a new one). */
     fun commitEdit(step: Step) = edit { s ->
@@ -180,6 +257,18 @@ class RecipeEditorViewModel(
     /** Dismisses the current error message. */
     fun clearError() = _state.update { it.copy(error = null) }
 
+    /** Dismisses the current informational message. */
+    fun clearNotice() = _state.update { it.copy(notice = null) }
+
+    /**
+     * Called when the user explicitly throws the changes away (before leaving), so that they
+     * are neither kept for process death nor offered again by the next editor.
+     */
+    fun markDiscarded() {
+        discarded = true
+        savedState.remove<String>(KEY_DRAFT)
+    }
+
     /**
      * Validates and saves. New recipes are created right away. For an existing recipe whose
      * steps differ from the base version, a [VersionPrompt] is raised first; the save then
@@ -194,7 +283,10 @@ class RecipeEditorViewModel(
         }
         when {
             s.isNew -> persist(versionName = null, versionNote = "")
-            !s.dirty -> _state.update { it.copy(savedRecipeId = recipeId) }
+            !s.dirty -> {
+                savedState.remove<String>(KEY_DRAFT)
+                _state.update { it.copy(savedRecipeId = recipeId) }
+            }
             s.steps != baseVersion?.steps ->
                 _state.update { it.copy(versionPrompt = VersionPrompt(EditorRules.nextVersionName(versionCount))) }
             else -> persist(versionName = null, versionNote = "")
@@ -214,36 +306,59 @@ class RecipeEditorViewModel(
         val s = _state.value.copy(versionPrompt = null, saving = true, error = null)
         _state.value = s
         viewModelScope.launch {
-            try {
-                val axes = EditorRules.cleanAxes(s.customAxes)
-                val name = s.name.trim()
-                val notes = s.notes.trim()
-                val savedId = if (recipeId == null) {
-                    repository.createRecipe(name, s.steps, axes, notes).id
-                } else {
-                    val current = repository.getRecipe(recipeId) ?: recipe
-                        ?: error("This recipe no longer exists.")
-                    val updated = current.copy(name = name, notes = notes, customAxes = axes)
-                    if (updated != current) repository.saveRecipe(updated)
-                    if (s.steps != baseVersion?.steps) {
-                        repository.addVersion(
-                            recipeId = recipeId,
-                            steps = s.steps,
-                            name = versionName,
-                            parentVersionId = baseVersion?.id,
-                            origin = VersionOrigin.MANUAL,
-                            note = versionNote,
-                        )
+            // The writes must not stop halfway (recipe updated but version lost) when the
+            // editor is closed while saving, so they run to completion regardless.
+            withContext(NonCancellable) {
+                try {
+                    val axes = EditorRules.cleanAxes(s.customAxes)
+                    val name = s.name.trim()
+                    val notes = s.notes.trim()
+                    val savedId = if (recipeId == null) {
+                        repository.createRecipe(name, s.steps, axes, notes).id
+                    } else {
+                        val current = repository.getRecipe(recipeId) ?: recipe
+                            ?: error("This recipe no longer exists.")
+                        val updated = current.copy(name = name, notes = notes, customAxes = axes)
+                        val newSteps = s.steps.takeIf { it != baseVersion?.steps }
+                        if (updated != current || newSteps != null) {
+                            // One transaction: never a renamed recipe without its new version.
+                            repository.saveRecipeWithVersion(
+                                recipe = updated,
+                                steps = newSteps,
+                                versionName = versionName,
+                                parentVersionId = baseVersion?.id,
+                                origin = VersionOrigin.MANUAL,
+                                note = versionNote,
+                            )
+                        }
+                        recipeId
                     }
-                    recipeId
+                    initial = s.content()
+                    savedState.remove<String>(KEY_DRAFT)
+                    _state.update { it.copy(saving = false, dirty = false, savedRecipeId = savedId) }
+                } catch (e: CancellationException) {
+                    throw e
+                } catch (e: Exception) {
+                    _state.update { it.copy(saving = false, error = "Could not save: ${e.message ?: e.javaClass.simpleName}") }
                 }
-                initial = s.content()
-                _state.update { it.copy(saving = false, dirty = false, savedRecipeId = savedId) }
-            } catch (e: CancellationException) {
-                throw e
-            } catch (e: Exception) {
-                _state.update { it.copy(saving = false, error = "Could not save: ${e.message ?: e.javaClass.simpleName}") }
             }
         }
+    }
+
+    override fun onCleared() {
+        val s = _state.value
+        // Only existing recipes are stashed: their random ids keep a draft from leaking into
+        // an unrelated "New recipe" editor (e.g. after the activity was finished).
+        val unsaved = recipeId != null && contentReady && !discarded && !s.saving && s.savedRecipeId == null &&
+            s.loadError == null && s.dirty
+        if (unsaved) EditorDraftStash.put(stashKey, s.toDraft())
+        super.onCleared()
+    }
+
+    private companion object {
+        const val KEY_DRAFT = "souschef.editor.draft"
+        const val RESTORED_NOTICE =
+            "The editor was closed before these changes were saved, so they were kept. " +
+                "Save them, or go back and discard them."
     }
 }

@@ -46,6 +46,9 @@ class OpenRouterClient internal constructor(
     ): String {
         val key = apiKey().trim()
         if (key.isEmpty()) throw LlmException("Add your OpenRouter API key in Settings first.")
+        // OkHttp throws IllegalArgumentException for header characters outside \t and 0x20..0x7E
+        // (e.g. a key typed on a Hebrew layout, or pasted with a zero-width or non-breaking space).
+        if (key.any { it != '\t' && it !in ' '..'~' }) throw LlmException(INVALID_KEY_CHARS)
         val request = ChatRequest(
             apiKey = key,
             model = model.trim(),
@@ -60,6 +63,9 @@ class OpenRouterClient internal constructor(
             throw httpError(e.code, e.body, request.model, e)
         } catch (e: IOException) {
             throw LlmException("Could not reach OpenRouter. Are you online?", e)
+        } catch (e: IllegalArgumentException) {
+            // Safety net: OkHttp rejects header values it cannot send; never leak a raw exception.
+            throw LlmException(INVALID_KEY_CHARS, e)
         }
         return parseContent(body, request.model)
     }
@@ -111,6 +117,8 @@ class OpenRouterClient internal constructor(
         const val REFERER = "https://github.com/LiorAvrahami/SousChefAndroid"
         const val APP_TITLE = "Sous Chef"
         private const val MAX_SERVER_MESSAGE = 160
+        const val INVALID_KEY_CHARS =
+            "The API key contains characters that are not allowed. Paste it again in Settings."
         private val WHITESPACE = Regex("""\s+""")
 
         /** Maps an HTTP failure to a message a cook understands, plus the server's short explanation. */

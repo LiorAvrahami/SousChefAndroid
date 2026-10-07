@@ -48,9 +48,16 @@ fun SousChefNavGraph(
         }
     }
 
-    fun openRecipe(recipeId: String) {
+    /**
+     * Shows [recipeId] after leaving the screen whose route pattern is [leaving]: that screen
+     * is popped, and if the recipe screen is now on top it is reused. Nothing else on the
+     * back stack is touched, so an editor with unsaved changes that happened to be open
+     * underneath (for example when a timer notification opened the cooking screen on top
+     * of it) is never discarded.
+     */
+    fun showRecipeAfter(leaving: String, recipeId: String) {
         navController.navigate(Routes.recipe(recipeId)) {
-            popUpTo(Routes.RECIPES)
+            popUpTo(leaving) { inclusive = true }
             launchSingleTop = true
         }
     }
@@ -59,10 +66,10 @@ fun SousChefNavGraph(
         composable(Routes.RECIPES) {
             RecipeListScreen(
                 container = container,
-                onOpenRecipe = { navController.navigate(Routes.recipe(it)) },
-                onNewRecipe = { navController.navigate(Routes.editor()) },
-                onOpenSettings = { navController.navigate(Routes.SETTINGS) },
-                onResumeCooking = { navController.navigate(Routes.cook(it)) },
+                onOpenRecipe = { navController.navigate(Routes.recipe(it)) { launchSingleTop = true } },
+                onNewRecipe = { navController.navigate(Routes.editor()) { launchSingleTop = true } },
+                onOpenSettings = { navController.navigate(Routes.SETTINGS) { launchSingleTop = true } },
+                onResumeCooking = { navController.navigate(Routes.cook(it)) { launchSingleTop = true } },
             )
         }
         composable(
@@ -74,8 +81,8 @@ fun SousChefNavGraph(
                 container = container,
                 recipeId = recipeId,
                 onBack = { navController.popBackStack() },
-                onNewVersion = { rId, vId -> navController.navigate(Routes.editor(rId, vId)) },
-                onStartCooking = { trialId -> navController.navigate(Routes.cook(trialId)) },
+                onNewVersion = { rId, vId -> navController.navigate(Routes.editor(rId, vId)) { launchSingleTop = true } },
+                onStartCooking = { trialId -> navController.navigate(Routes.cook(trialId)) { launchSingleTop = true } },
             )
         }
         composable(
@@ -91,7 +98,7 @@ fun SousChefNavGraph(
                 container = container,
                 recipeId = recipeId,
                 baseVersionId = versionId,
-                onSaved = { savedRecipeId -> openRecipe(savedRecipeId) },
+                onSaved = { savedRecipeId -> showRecipeAfter(Routes.EDITOR, savedRecipeId) },
                 onCancel = { navController.popBackStack() },
             )
         }
@@ -108,7 +115,7 @@ fun SousChefNavGraph(
                         popUpTo(Routes.COOK) { inclusive = true }
                     }
                 },
-                onExit = { recipeId -> openRecipe(recipeId) },
+                onExit = { recipeId -> showRecipeAfter(Routes.COOK, recipeId) },
             )
         }
         composable(
@@ -119,14 +126,14 @@ fun SousChefNavGraph(
             RatingScreen(
                 container = container,
                 trialId = trialId,
-                onDone = { recipeId -> openRecipe(recipeId) },
+                onDone = { recipeId -> showRecipeAfter(Routes.RATE, recipeId) },
             )
         }
         composable(Routes.SETTINGS) {
             SettingsScreen(
                 container = container,
                 onBack = { navController.popBackStack() },
-                onOpenTrash = { navController.navigate(Routes.TRASH) },
+                onOpenTrash = { navController.navigate(Routes.TRASH) { launchSingleTop = true } },
             )
         }
         composable(Routes.TRASH) {

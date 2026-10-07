@@ -19,6 +19,7 @@ import androidx.compose.material.icons.filled.Lock
 import androidx.compose.material3.Card
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
+import androidx.compose.material3.LocalContentColor
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
@@ -95,7 +96,7 @@ private fun RowAction(
             imageVector = icon,
             contentDescription = description,
             modifier = Modifier.size(32.dp),
-            tint = if (tinted && enabled) MaterialTheme.colorScheme.error else androidx.compose.ui.graphics.Color.Unspecified,
+            tint = if (tinted && enabled) MaterialTheme.colorScheme.error else LocalContentColor.current,
         )
     }
 }

@@ -66,18 +66,35 @@ class AlarmService : Service() {
             return START_NOT_STICKY
         }
         val request = Request.from(intent)
-        current = request
         val notification = Notifications.buildAlarmNotification(
             this, request.trialId, request.stepIndex, request.title, request.text, request.subText, withSound = false,
         )
-        try {
+        // startForeground FIRST: a service started with startForegroundService must call it even
+        // when it is about to stop, or the system kills the app.
+        val foreground = try {
             val type = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) ServiceInfo.FOREGROUND_SERVICE_TYPE_MEDIA_PLAYBACK else 0
             ServiceCompat.startForeground(this, Notifications.ALARM_NOTIFICATION_ID, notification, type)
+            true
         } catch (e: Exception) {
-            Log.e(TAG, "Could not go to the foreground; ringing through the notification", e)
+            Log.e(TAG, "Could not go to the foreground", e)
+            false
+        }
+        // Then settle the pending start and check for a stop that arrived while it was pending
+        // (AlarmFiring.stopRinging skips stopService during that window). Keep this order.
+        if (request.stopRequests != null) {
+            AlarmState.serviceStartSettled()
+            if (AlarmState.stopRequests.value != request.stopRequests) {
+                Log.i(TAG, "Alarm was stopped before the service started ringing")
+                stopAlarm()
+                return START_NOT_STICKY
+            }
+        }
+        if (!foreground) {
+            Log.e(TAG, "Ringing through the notification instead of the service")
             handOffToNotification(request)
             return START_NOT_STICKY
         }
+        current = request
         try {
             startRinging()
         } catch (e: Exception) {
@@ -247,6 +264,8 @@ class AlarmService : Service() {
         val title: String,
         val text: String,
         val subText: String?,
+        /** The stop counter when the alarm was decided, or null if the starter did not pass it. */
+        val stopRequests: Int?,
     ) {
         val message: AlarmMessage get() = AlarmMessage(title, text, subText)
 
@@ -257,6 +276,11 @@ class AlarmService : Service() {
                 title = intent?.getStringExtra(EXTRA_TITLE) ?: AlarmLogic.TITLE,
                 text = intent?.getStringExtra(EXTRA_TEXT) ?: "Wait is over",
                 subText = intent?.getStringExtra(EXTRA_SUB_TEXT),
+                // Only meaningful in the process that counted it: after a process restart the
+                // counters start again at 0, so a foreign value must not read as "stopped".
+                stopRequests = intent
+                    ?.takeIf { it.hasExtra(EXTRA_STOP_REQUESTS) && it.getLongExtra(EXTRA_PROCESS_NONCE, 0L) == AlarmState.processNonce }
+                    ?.getIntExtra(EXTRA_STOP_REQUESTS, 0),
             )
         }
     }
@@ -270,6 +294,16 @@ class AlarmService : Service() {
         private const val EXTRA_TITLE = "title"
         private const val EXTRA_TEXT = "text"
         private const val EXTRA_SUB_TEXT = "subText"
+
+        /**
+         * Ring-intent extra set by [AlarmFiring]: [AlarmState.stopRequests] when the alarm was
+         * decided. Its presence also means a pending start was counted in
+         * [AlarmState.pendingServiceStarts].
+         */
+        internal const val EXTRA_STOP_REQUESTS = "stopRequests"
+
+        /** Ring-intent extra: [AlarmState.processNonce] of the process that counted the pending start. */
+        internal const val EXTRA_PROCESS_NONCE = "processNonce"
 
         private const val TAG = "SousChefTimer"
         private const val WAKE_LOCK_TAG = "SousChef:AlarmService"

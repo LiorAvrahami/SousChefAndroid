@@ -110,6 +110,27 @@ class RecipeRepository(private val db: AppDatabase) {
 
     suspend fun saveVersion(version: RecipeVersion) = versionDao.upsert(version)
 
+    /**
+     * Saves the recipe's metadata and, when [steps] is given, a new version based on them,
+     * all in ONE transaction: a crash can never leave the recipe updated without its version.
+     * Returns the new version, or null when [steps] is null.
+     */
+    suspend fun saveRecipeWithVersion(
+        recipe: Recipe,
+        steps: List<Step>?,
+        versionName: String? = null,
+        parentVersionId: String? = null,
+        origin: VersionOrigin = VersionOrigin.MANUAL,
+        note: String = "",
+    ): RecipeVersion? = db.withTransaction {
+        recipeDao.upsert(recipe.copy(updatedAt = System.currentTimeMillis()))
+        if (steps == null) {
+            null
+        } else {
+            addVersion(recipe.id, steps, versionName, parentVersionId, origin, note)
+        }
+    }
+
     suspend fun saveTrial(trial: Trial) {
         db.withTransaction {
             trialDao.upsert(trial)

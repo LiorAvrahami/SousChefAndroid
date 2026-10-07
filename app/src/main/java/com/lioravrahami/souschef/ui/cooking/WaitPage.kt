@@ -3,6 +3,7 @@ package com.lioravrahami.souschef.ui.cooking
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.aspectRatio
@@ -10,6 +11,7 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.widthIn
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Text
@@ -26,11 +28,16 @@ import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.StrokeCap
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.testTag
+import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.rememberTextMeasurer
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.isSpecified
+import androidx.compose.ui.unit.sp
 import com.lioravrahami.souschef.data.model.Step
 import com.lioravrahami.souschef.data.model.Trial
 import com.lioravrahami.souschef.domain.recipe.StepParser
@@ -72,6 +79,7 @@ fun rememberWallClock(ticking: Boolean): Long {
  * @param onStart starts or restarts the timer with the given number of seconds.
  * @param onClearAndAdvance clears this step's timer and moves to the next page.
  * @param onAdvance moves to the next page without touching any timer.
+ * @param alarmRinging whether the alarm is sounding right now; a page never starts its timer while it does.
  */
 @Composable
 fun WaitPage(
@@ -86,19 +94,35 @@ fun WaitPage(
     onClearAndAdvance: () -> Unit,
     onAdvance: () -> Unit,
     modifier: Modifier = Modifier,
+    alarmRinging: Boolean = false,
 ) {
     val trial = session.trial
     val planned = session.waitSeconds(stepIndex)
     val ownsTimer = trial.timerStepIndex == stepIndex && trial.timerEndAt != null
     val endAt = trial.timerEndAt
 
-    // Only the settled page may start its timer; keyed on settling so that clearing the
-    // timer (skip / stop) never restarts it while the page animates away.
-    val latestTimerEnd by rememberUpdatedState(trial.timerEndAt)
-    LaunchedEffect(isSettled, autoStartArmed, alreadyHandled) {
-        if (WaitClock.shouldAutoStart(isSettled, autoStartArmed, alreadyHandled, latestTimerEnd)) {
-            onAutoStart(planned)
-        }
+    // Only the settled page may start its timer. Clearing this page's timer (skip / stop)
+    // marks it handled first, so it never restarts while the page animates away. The effect
+    // also re-runs when a blocking timer goes away: cleared (timerEndAt changes), silenced
+    // (ringing changes) or ended long enough ago without ringing (grace flip).
+    val latestTrial by rememberUpdatedState(trial)
+    val latestRinging by rememberUpdatedState(alarmRinging)
+    val latestOnAutoStart by rememberUpdatedState(onAutoStart)
+    val latestPlanned by rememberUpdatedState(planned)
+    val graceOver = rememberIsPast(endAt?.let { it + WaitClock.FINISHED_GRACE_MILLIS })
+    LaunchedEffect(isSettled, autoStartArmed, alreadyHandled, endAt, alarmRinging, graceOver) {
+        val t = latestTrial
+        val start = WaitClock.shouldAutoStart(
+            isSettled = isSettled,
+            armed = autoStartArmed,
+            alreadyHandled = alreadyHandled,
+            timerEndAt = t.timerEndAt,
+            stepIndex = stepIndex,
+            timerStepIndex = t.timerStepIndex,
+            nowMillis = System.currentTimeMillis(),
+            ringing = latestRinging,
+        )
+        if (start) latestOnAutoStart(latestPlanned)
     }
 
     val now = rememberWallClock(ticking = ownsTimer && endAt != null && endAt > System.currentTimeMillis())
@@ -123,12 +147,15 @@ fun WaitPage(
             maxLines = 2,
             overflow = TextOverflow.Ellipsis,
         )
-        Text(
-            text = "Planned: " + StepParser.formatDuration(planned),
-            style = MaterialTheme.typography.titleLarge,
-            color = MaterialTheme.colorScheme.onSurfaceVariant,
-            textAlign = TextAlign.Center,
-        )
+        // Hidden once the time is up, so the ring keeps room for the clock on small screens.
+        if (phase != WaitPhase.TIMES_UP) {
+            Text(
+                text = "Planned: " + StepParser.formatDuration(planned),
+                style = MaterialTheme.typography.titleLarge,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                textAlign = TextAlign.Center,
+            )
+        }
         CookingTexts.changeLine(session.changesForStep(stepIndex))?.let {
             Text(
                 text = it,
@@ -151,7 +178,7 @@ fun WaitPage(
                 caption = when (phase) {
                     WaitPhase.RUNNING -> "left"
                     WaitPhase.TIMES_UP -> null
-                    WaitPhase.IDLE -> otherTimerCaption(trial, stepIndex)
+                    WaitPhase.IDLE -> otherTimerCaption(trial, stepIndex, now)
                 },
             )
         }
@@ -199,10 +226,12 @@ fun WaitPage(
     }
 }
 
-/** Under the idle clock: warns that starting replaces the timer of another step. */
-private fun otherTimerCaption(trial: Trial, stepIndex: Int): String {
+/** Under the idle clock: warns that starting replaces the still-running timer of another step. */
+private fun otherTimerCaption(trial: Trial, stepIndex: Int, nowMillis: Long): String {
     val other = trial.timerStepIndex
-    return if (trial.timerEndAt != null && other != null && other != stepIndex) {
+    val end = trial.timerEndAt
+    val now = maxOf(nowMillis, System.currentTimeMillis())
+    return if (end != null && end > now && other != null && other != stepIndex) {
         "Starting stops the timer of step ${other + 1}"
     } else {
         "not started"
@@ -232,7 +261,8 @@ private fun SmallTimerButtons(onRestart: () -> Unit, onPlusMinute: () -> Unit) {
 
 /**
  * A ring that empties as the wait runs out, with the clock in its centre. The clock text
- * carries [TestTags.WAIT_COUNTDOWN].
+ * carries [TestTags.WAIT_COUNTDOWN]. The clock is sized from the ring (see [ClockSizing]) so it
+ * is never cut off when the ring gets small on crowded or small screens.
  */
 @Composable
 private fun CountdownRing(
@@ -243,11 +273,13 @@ private fun CountdownRing(
 ) {
     val track = MaterialTheme.colorScheme.surfaceVariant
     val progressColor = if (timesUp) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.primary
-    Box(
+    val typography = MaterialTheme.typography
+    BoxWithConstraints(
         // Largest square that fits the space left between the texts and the buttons.
         modifier = Modifier.aspectRatio(1f, matchHeightConstraintsFirst = true),
         contentAlignment = Alignment.Center,
     ) {
+        val side = if (maxWidth < maxHeight) maxWidth else maxHeight
         Canvas(Modifier.fillMaxSize()) {
             val stroke = size.minDimension * 0.07f
             val diameter = size.minDimension - stroke
@@ -275,25 +307,73 @@ private fun CountdownRing(
                 )
             }
         }
+
+        // The caption only fits a reasonably large ring; the clock always has priority.
+        val showCaption = caption != null && side >= CAPTION_MIN_RING
+        val clock = StepParser.formatClock(remainingSeconds)
+        val baseStyle = (if (remainingSeconds >= 3600) typography.displayMedium else typography.displayLarge)
+            .merge(TextStyle(fontWeight = FontWeight.Bold, fontFeatureSettings = "tnum"))
+        val minFontSp = typography.titleLarge.fontSize.let { if (it.isSpecified && it.isSp) it.value else 22f }
+        val measurer = rememberTextMeasurer()
+        val density = LocalDensity.current
+        // Measured on a digit template so the size does not change with every tick.
+        val template = ClockSizing.template(clock)
+        val clockStyle = remember(template, baseStyle, side, showCaption, caption, density, minFontSp) {
+            val measured = measurer.measure(
+                text = template,
+                style = baseStyle,
+                maxLines = 1,
+                softWrap = false,
+            )
+            val sidePx = with(density) { side.toPx() }
+            // One line for a short caption ("left"), two for the longer warnings.
+            val captionLines = if ((caption?.length ?: 0) <= 12) 1 else 2
+            val captionPx = if (showCaption) with(density) { (CAPTION_LINE * captionLines).toPx() } else 0f
+            val baseSp = baseStyle.fontSize.let { if (it.isSpecified && it.isSp) it.value else 57f }
+            val scale = ClockSizing.scale(
+                measuredWidth = measured.size.width.toFloat(),
+                measuredHeight = measured.size.height.toFloat(),
+                availableWidth = sidePx * ClockSizing.WIDTH_SHARE,
+                availableHeight = (sidePx * ClockSizing.HEIGHT_SHARE - captionPx).coerceAtLeast(0f),
+                minScale = minFontSp / baseSp,
+            )
+            if (scale >= 1f) {
+                baseStyle
+            } else {
+                val lineSp = baseStyle.lineHeight.let { if (it.isSpecified && it.isSp) it.value else 0f }
+                baseStyle.copy(
+                    fontSize = (baseSp * scale).sp,
+                    lineHeight = AutoSize.lineHeightFor(baseSp * scale, baseSp, lineSp).sp,
+                )
+            }
+        }
+
         Column(horizontalAlignment = Alignment.CenterHorizontally) {
             Text(
-                text = StepParser.formatClock(remainingSeconds),
-                style = if (remainingSeconds >= 3600) MaterialTheme.typography.displayMedium else MaterialTheme.typography.displayLarge,
-                fontWeight = FontWeight.Bold,
+                text = clock,
+                style = clockStyle,
                 color = if (timesUp) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.onBackground,
                 maxLines = 1,
                 softWrap = false,
                 modifier = Modifier.testTag(TestTags.WAIT_COUNTDOWN),
             )
-            if (caption != null) {
+            if (showCaption && caption != null) {
                 Text(
                     text = caption,
-                    style = MaterialTheme.typography.titleMedium,
+                    style = typography.titleMedium,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                     textAlign = TextAlign.Center,
-                    modifier = Modifier.padding(horizontal = 32.dp),
+                    maxLines = 2,
+                    overflow = TextOverflow.Ellipsis,
+                    modifier = Modifier.widthIn(max = side * 0.7f),
                 )
             }
         }
     }
 }
+
+/** Smallest ring that still shows the caption under the clock. */
+private val CAPTION_MIN_RING = 150.dp
+
+/** Height reserved per caption line (titleMedium) when sizing the clock. */
+private val CAPTION_LINE = 28.dp

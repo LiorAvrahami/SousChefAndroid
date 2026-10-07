@@ -82,6 +82,24 @@ class OpenRouterClientTest {
     }
 
     @Test
+    fun keyWithCharactersOkHttpCannotSendFailsWithoutCallingTheServer() {
+        val expected = "The API key contains characters that are not allowed. Paste it again in Settings."
+        for (key in listOf("sk-or-\u200Babc", "sk-or\u00A0abc", "\u05E9k-or-abc")) {
+            val transport = FakeTransport()
+            assertEquals(expected, runTestFor(transport, apiKey = key))
+            assertTrue(transport.requests.isEmpty())
+        }
+    }
+
+    @Test
+    fun illegalArgumentFromTheTransportBecomesAnLlmException() {
+        assertEquals(
+            "The API key contains characters that are not allowed. Paste it again in Settings.",
+            messageFor(IllegalArgumentException("Unexpected char 0x200b at 13 in Authorization value")),
+        )
+    }
+
+    @Test
     fun unauthorizedAndForbiddenMeanABadKey() {
         assertEquals("OpenRouter rejected the API key. Check it in Settings.", messageFor(HttpStatusException(401, "")))
         assertTrue(messageFor(HttpStatusException(403, "")).startsWith("OpenRouter rejected the API key."))

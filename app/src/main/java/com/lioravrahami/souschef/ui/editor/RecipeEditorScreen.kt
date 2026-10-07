@@ -47,6 +47,7 @@ import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.input.KeyboardCapitalization
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import androidx.lifecycle.createSavedStateHandle
 import androidx.lifecycle.viewmodel.compose.viewModel
 import androidx.lifecycle.viewmodel.initializer
 import androidx.lifecycle.viewmodel.viewModelFactory
@@ -75,7 +76,9 @@ fun RecipeEditorScreen(
 ) {
     val vm: RecipeEditorViewModel = viewModel(
         key = "recipe-editor:${recipeId.orEmpty()}:${baseVersionId.orEmpty()}",
-        factory = viewModelFactory { initializer { RecipeEditorViewModel(container, recipeId, baseVersionId) } },
+        factory = viewModelFactory {
+            initializer { RecipeEditorViewModel(container, recipeId, baseVersionId, createSavedStateHandle()) }
+        },
     )
     val state by vm.state.collectAsStateWithLifecycle()
     val latestOnSaved by rememberUpdatedState(onSaved)
@@ -108,14 +111,17 @@ private fun EditorForm(
     var showDiscard by rememberSaveable { mutableStateOf(false) }
     var showPaste by rememberSaveable { mutableStateOf(false) }
     var pendingDelete by rememberSaveable { mutableStateOf<Int?>(null) }
+    // While saving, leaving is blocked (back is consumed) so the save is never interrupted.
     val requestClose: () -> Unit = {
-        if (state.dirty) {
+        if (state.saving) {
+            // Ignored: the save finishes and then leaves by itself.
+        } else if (state.dirty) {
             showDiscard = true
         } else {
             onCancel()
         }
     }
-    BackHandler(enabled = state.dirty && !state.saving) { showDiscard = true }
+    BackHandler(enabled = state.dirty || state.saving) { if (!state.saving) showDiscard = true }
 
     ScreenScaffold(
         title = if (state.isNew) "New recipe" else "Edit recipe",
@@ -162,7 +168,10 @@ private fun EditorForm(
         DiscardChangesDialog(
             onDiscard = {
                 showDiscard = false
-                onCancel()
+                if (!state.saving) {
+                    vm.markDiscarded()
+                    onCancel()
+                }
             },
             onKeepEditing = { showDiscard = false },
         )
@@ -197,6 +206,11 @@ private fun EditorForm(
     }
     state.error?.let { message ->
         MessageDialog(title = "Not saved yet", message = message, onDismiss = vm::clearError)
+    }
+    if (state.error == null) {
+        state.notice?.let { message ->
+            MessageDialog(title = "Unsaved changes restored", message = message, onDismiss = vm::clearNotice)
+        }
     }
 }
 

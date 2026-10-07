@@ -153,11 +153,41 @@ class LlmOptimizerTest {
     }
 
     @Test
-    fun checkerRejectionWithoutRevisionIsAnError() = runTest {
+    fun checkerRejectionWithoutRevisionLimitsTheOriginal() = runTest {
+        // boldness 0.1 -> each change limited to 10%: water 2 -> 1.8.
         val transport = FakeTransport(
             reply(values(1.0, 1.0, 600.0, 180.0)),
             reply("""{"ok":false,"reason":"Unsafe."}"""),
         )
+        val suggestion = optimizer(transport).suggest(details, settings) as LlmSuggestion.Values
+        assertValues(listOf(1.8, 1.0, 600.0, 180.0), suggestion.values)
+        assertTrue(suggestion.rationale.contains("objected: Unsafe"))
+        assertTrue(suggestion.rationale.contains("limited to ±10%"))
+        assertTrue(suggestion.summary.endsWith("(limited after the reviewer's objection)"))
+        assertTrue(suggestion.summary.contains("water: 2 → 1.8 cups"))
+        assertEquals(2, transport.requests.size)
+    }
+
+    @Test
+    fun checkerRevisionWithWrongValueCountLimitsTheOriginal() = runTest {
+        val revised = values(1.7, 600.0, 180.0)
+        val transport = FakeTransport(
+            reply(values(1.0, 1.0, 600.0, 180.0)),
+            reply("""{"ok":false,"reason":"Too much.","revised":$revised}"""),
+        )
+        val suggestion = optimizer(transport).suggest(details, settings) as LlmSuggestion.Values
+        assertValues(listOf(1.8, 1.0, 600.0, 180.0), suggestion.values)
+        assertTrue(suggestion.rationale.contains("objected: Too much"))
+    }
+
+    @Test
+    fun checkerRejectionOfANewVersionWithoutRevisionIsAnError() = runTest {
+        val proposal = """{"type":"new_version","parentVersionId":"v1","name":"Lower heat",
+            "steps":[{"type":"text","text":"Add 2[cups] water and 1[tsp] salt"},
+                     {"type":"wait","label":"Simmer","seconds":900,"locked":false},
+                     {"type":"text","text":"Bake at 160[°C] on the middle rack"}],
+            "summary":"s","rationale":"r"}"""
+        val transport = FakeTransport(reply(proposal), reply("""{"ok":false,"reason":"Unsafe."}"""))
         assertEquals("The reviewing AI rejected the suggestion: Unsafe. Try again.", expectError(transport))
     }
 

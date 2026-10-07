@@ -29,6 +29,16 @@ internal class TimerStore(context: Context) {
             editor.apply()
         }
 
+    /**
+     * Whether the alarm in [scheduled] was registered as an exact alarm. False after an inexact
+     * fallback, so it can be re-registered once the user allows exact alarms.
+     */
+    var scheduledExact: Boolean
+        get() = prefs.getBoolean(KEY_EXACT, false)
+        set(value) {
+            prefs.edit().putBoolean(KEY_EXACT, value).apply()
+        }
+
     /** Remembers that the alarm of [trialId] ending at [endAt] has rung (or was reported). */
     fun markFired(trialId: String, endAt: Long) {
         prefs.edit().putString(KEY_FIRED_TRIAL, trialId).putLong(KEY_FIRED_END, endAt).commit()
@@ -45,5 +55,6 @@ internal class TimerStore(context: Context) {
         const val KEY_END = "scheduled_end"
         const val KEY_FIRED_TRIAL = "fired_trial"
         const val KEY_FIRED_END = "fired_end"
+        const val KEY_EXACT = "scheduled_exact"
     }
 }

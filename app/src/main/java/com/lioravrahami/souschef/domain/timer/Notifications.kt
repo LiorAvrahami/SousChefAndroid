@@ -120,7 +120,8 @@ object Notifications {
 
     /**
      * Builds the ringing-alarm notification: alarm category, max priority, full-screen intent and
-     * content intent opening the cooking screen of [trialId], and a "Stop alarm" action.
+     * content intent opening the cooking screen of [trialId], and a "Stop alarm" action (also sent
+     * when the user swipes the notification away).
      *
      * @param withSound true: on [CHANNEL_ALARM] and insistent, so the notification itself rings
      *   until stopped (fallback when [AlarmService] cannot run). false: on the silent
@@ -152,6 +153,10 @@ object Notifications {
             .setContentIntent(openTrialIntent(context, trialId, REQ_OPEN))
             .setFullScreenIntent(openTrialIntent(context, trialId, REQ_FULL_SCREEN), true)
             .addAction(0, "Stop alarm", stopAlarmIntent(context))
+            // Android 13+/14+ let users swipe away even ongoing / foreground notifications: treat
+            // that like "Stop alarm" so the sound never keeps playing without a stop control.
+            // (Updating or cancelling the notification from code does not send this intent.)
+            .setDeleteIntent(stopAlarmIntent(context))
             .addExtras(Bundle().apply { putInt(EXTRA_STEP_INDEX, stepIndex) })
         val notification = builder.build()
         // Insistent: the channel's alarm sound repeats until the notification is stopped. Updating

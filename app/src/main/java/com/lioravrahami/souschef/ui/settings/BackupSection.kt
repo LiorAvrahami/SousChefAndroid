@@ -13,14 +13,13 @@ import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
-import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
-import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.testTag
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.lioravrahami.souschef.AppContainer
 import com.lioravrahami.souschef.data.backup.BackupManager
 import com.lioravrahami.souschef.ui.TestTags
@@ -28,31 +27,42 @@ import com.lioravrahami.souschef.ui.components.BigButton
 import com.lioravrahami.souschef.ui.components.BigOutlinedButton
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import java.io.ByteArrayOutputStream
 import java.io.IOException
 import java.io.OutputStream
 import java.time.LocalDate
 
-/** Largest backup that is offered for sharing as plain text, in UTF-8 bytes. */
-private const val SHARE_LIMIT_BYTES = 200_000
+/**
+ * Largest backup that is offered for sharing as plain text, in UTF-8 bytes. Kept well below
+ * the 1 MB binder limit: a Parcel stores the text as UTF-16 (twice the size) and ACTION_SEND
+ * also copies EXTRA_TEXT into the intent's ClipData, so the transaction carries about four
+ * times this many bytes. Many receiving apps also truncate long text.
+ */
+private const val SHARE_LIMIT_BYTES = 50_000
 
 /**
  * Export to a file, import from a file (this app's backups or the old web app's
  * `recipes.json`), and share small backups as text.
+ *
+ * Import and export run in the app scope through [backupTasks], so rotating the phone,
+ * pressing Back or opening the trash does not cancel them; their progress and result live
+ * outside this composable and reappear when the screen comes back.
  */
 @Composable
 fun BackupSection(container: AppContainer) {
     val context = LocalContext.current
-    val scope = rememberCoroutineScope()
-    var busy by remember { mutableStateOf<String?>(null) }
-    var dialog by remember { mutableStateOf<Pair<String, String>?>(null) }
-    // Bumped after an import so the share preview is rebuilt.
-    var dataVersion by remember { mutableIntStateOf(0) }
+    val tasks = remember(container) { container.backupTasks() }
+    val taskState by tasks.state.collectAsStateWithLifecycle()
+    val busy = taskState.busyLabel
+    // The application's resolver: the work may outlive this activity. SAF grants belong to
+    // the app, so it can open the chosen documents.
+    val resolver = container.appContext.contentResolver
+    var shareError by remember { mutableStateOf<String?>(null) }
     var shareText by remember { mutableStateOf<String?>(null) }
 
-    LaunchedEffect(dataVersion) {
+    // Rebuilt whenever an import or export finishes.
+    LaunchedEffect(taskState.completed) {
         shareText = try {
             container.backup.exportJson().takeIf { it.toByteArray(Charsets.UTF_8).size < SHARE_LIMIT_BYTES }
         } catch (e: CancellationException) {
@@ -62,30 +72,15 @@ fun BackupSection(container: AppContainer) {
         }
     }
 
-    fun runTask(label: String, task: suspend () -> Pair<String, String>) {
-        busy = label
-        scope.launch {
-            dialog = try {
-                task()
-            } catch (e: CancellationException) {
-                throw e
-            } catch (e: Exception) {
-                "$label failed" to (e.message ?: e.toString())
-            } finally {
-                busy = null
-            }
-        }
-    }
-
     val exportLauncher = rememberLauncherForActivityResult(
         ActivityResultContracts.CreateDocument("application/json"),
     ) { uri ->
         if (uri != null) {
-            runTask("Export") {
+            tasks.run("Export") {
                 // Build the whole file first so a failure never leaves half a backup behind.
                 val text = container.backup.exportJson()
                 val bytes = text.toByteArray(Charsets.UTF_8)
-                withContext(Dispatchers.IO) { context.contentResolver.writeAll(uri, bytes) }
+                withContext(Dispatchers.IO) { resolver.writeAll(uri, bytes) }
                 "Backup saved" to "All recipes, versions and cookings were written to the file (${formatSize(bytes.size.toLong())})."
             }
         }
@@ -93,12 +88,11 @@ fun BackupSection(container: AppContainer) {
 
     val importLauncher = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
         if (uri != null) {
-            runTask("Import") {
+            tasks.run("Import") {
                 val result = withContext(Dispatchers.IO) {
-                    val text = context.contentResolver.readTextLimited(uri, BackupManager.MAX_IMPORT_BYTES)
+                    val text = resolver.readTextLimited(uri, BackupManager.MAX_IMPORT_BYTES)
                     container.backup.importJson(text)
                 }
-                dataVersion++
                 "Import finished" to importSummary(result)
             }
         }
@@ -128,7 +122,7 @@ fun BackupSection(container: AppContainer) {
                         context.shareText(text)
                     } catch (e: RuntimeException) {
                         // No app to share with, or the text is too big to hand over.
-                        dialog = "Share failed" to "Could not share the backup (${e.javaClass.simpleName}). Use \"Export backup file\" instead."
+                        shareError = "Could not share the backup (${e.javaClass.simpleName}). Use \"Export backup file\" instead."
                     }
                 },
             )
@@ -139,8 +133,11 @@ fun BackupSection(container: AppContainer) {
         }
     }
 
-    dialog?.let { (title, message) ->
-        MessageDialog(title = title, message = message, onDismiss = { dialog = null })
+    taskState.result?.let { (title, message) ->
+        MessageDialog(title = title, message = message, onDismiss = { tasks.dismissResult() })
+    }
+    shareError?.let { message ->
+        MessageDialog(title = "Share failed", message = message, onDismiss = { shareError = null })
     }
 }
 
