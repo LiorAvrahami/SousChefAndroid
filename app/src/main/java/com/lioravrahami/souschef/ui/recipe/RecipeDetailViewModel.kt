@@ -133,6 +133,8 @@ class RecipeDetailViewModel(
                 withContext(Dispatchers.Default) {
                     RecipeDetailText.firstDifferent(previous) { container.optimizer.propose(d, settings) }
                 }
+            } catch (e: CancellationException) {
+                throw e
             } catch (e: IllegalStateException) {
                 _proposal.value = ProposalState.Message(
                     "Nothing to explore",

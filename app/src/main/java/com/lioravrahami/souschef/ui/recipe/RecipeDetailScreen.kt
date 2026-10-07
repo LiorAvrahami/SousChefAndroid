@@ -28,6 +28,7 @@ import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.key
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberUpdatedState
@@ -313,15 +314,17 @@ private fun VersionsSection(
 ) {
     SectionTitle("Versions")
     RecipeDetailText.versionsNewestFirst(details).forEach { version ->
-        val done = details.trialsOf(version.id)
-        VersionCard(
-            version = version,
-            cookings = done.size,
-            bestScore = done.mapNotNull { it.overallScore }.maxOrNull(),
-            onCookAsWritten = { vm.cookAsWritten(version) },
-            onEdit = { onNewVersion(version.id) },
-            onToggleArchive = { vm.toggleArchive(version) },
-        )
+        key(version.id) {
+            val done = details.trialsOf(version.id)
+            VersionCard(
+                version = version,
+                cookings = done.size,
+                bestScore = done.mapNotNull { it.overallScore }.maxOrNull(),
+                onCookAsWritten = { vm.cookAsWritten(version) },
+                onEdit = { onNewVersion(version.id) },
+                onToggleArchive = { vm.toggleArchive(version) },
+            )
+        }
     }
 }
 
@@ -339,12 +342,14 @@ private fun HistorySection(details: RecipeDetails, onMakeVersion: (Trial) -> Uni
         )
     }
     history.forEach { trial ->
-        TrialCard(
-            trial = trial,
-            version = details.version(trial.versionId),
-            axes = details.axes,
-            onMakeVersion = { onMakeVersion(trial) },
-        )
+        key(trial.id) {
+            TrialCard(
+                trial = trial,
+                version = details.version(trial.versionId),
+                axes = details.axes,
+                onMakeVersion = { onMakeVersion(trial) },
+            )
+        }
     }
     if (abandoned > 0) {
         Text(
