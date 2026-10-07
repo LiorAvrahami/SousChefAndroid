@@ -117,16 +117,21 @@ class RecipeEditorViewModel(
         _state.update { old -> block(old).let { it.copy(dirty = it.content() != initial) } }
     }
 
+    /** Updates the recipe name as typed. */
     fun setName(name: String) = edit { it.copy(name = name) }
 
+    /** Updates the free-text recipe notes. */
     fun setNotes(notes: String) = edit { it.copy(notes = notes) }
 
+    /** Adds an empty custom rating axis to fill in. */
     fun addAxis() = edit { it.copy(customAxes = it.customAxes + RatingAxis(newId(), "", "")) }
 
+    /** Sets both labels of the custom axis [id]. */
     fun updateAxis(id: String, lowLabel: String, highLabel: String) = edit { s ->
         s.copy(customAxes = s.customAxes.map { if (it.id == id) it.copy(lowLabel = lowLabel, highLabel = highLabel) else it })
     }
 
+    /** Removes the custom axis [id]. */
     fun removeAxis(id: String) = edit { s -> s.copy(customAxes = s.customAxes.filterNot { it.id == id }) }
 
     /** Opens the text-step editor for a new step. */
@@ -142,6 +147,7 @@ class RecipeEditorViewModel(
         s.steps.getOrNull(index)?.let { s.copy(editing = StepEdit(index, it)) } ?: s
     }
 
+    /** Closes the step editor without changing the steps. */
     fun cancelEdit() = _state.update { it.copy(editing = null) }
 
     /** Stores the edited [step] (replacing the edited one, or appending a new one). */
@@ -163,6 +169,7 @@ class RecipeEditorViewModel(
         s.copy(steps = steps)
     }
 
+    /** Removes the step at [index]. */
     fun deleteStep(index: Int) = edit { s ->
         if (index !in s.steps.indices) s else s.copy(steps = s.steps.filterIndexed { i, _ -> i != index })
     }
@@ -170,6 +177,7 @@ class RecipeEditorViewModel(
     /** Appends the steps of a pasted recipe (see [EditorRules.parsePastedSteps]). */
     fun appendSteps(steps: List<Step>) = edit { it.copy(steps = it.steps + steps) }
 
+    /** Dismisses the current error message. */
     fun clearError() = _state.update { it.copy(error = null) }
 
     /**
@@ -199,6 +207,7 @@ class RecipeEditorViewModel(
         persist(versionName = name.trim(), versionNote = note.trim())
     }
 
+    /** Closes the version-name prompt without saving. */
     fun dismissVersionPrompt() = _state.update { it.copy(versionPrompt = null) }
 
     private fun persist(versionName: String?, versionNote: String) {
