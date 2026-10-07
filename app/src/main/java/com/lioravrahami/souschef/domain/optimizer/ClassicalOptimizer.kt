@@ -82,7 +82,9 @@ class ClassicalOptimizer(private val random: Random = Random.Default) {
 
         val data = chooseVersion(candidates)
         val anyTrials = candidates.any { it.trials.isNotEmpty() }
-        val draft = if (random.nextDouble() < explorationRate) {
+        // A global jump needs something to jump away from: before the first rated cooking
+        // only local tweaks are proposed, so the very first exploration stays edible.
+        val draft = if (anyTrials && random.nextDouble() < explorationRate) {
             globalDraft(data, boldness)
         } else {
             localDraft(data, boldness)

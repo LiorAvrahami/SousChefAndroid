@@ -4,6 +4,8 @@ import android.app.NotificationManager
 import android.content.Context
 import androidx.test.core.app.ActivityScenario
 import androidx.test.ext.junit.runners.AndroidJUnit4
+import androidx.test.uiautomator.By
+import androidx.test.uiautomator.Until
 import com.lioravrahami.souschef.data.model.Step
 import com.lioravrahami.souschef.data.model.TrialStatus
 import kotlinx.coroutines.runBlocking
@@ -86,6 +88,14 @@ class AlarmReliabilityTest {
         Thread.sleep(1500)
         Screenshots.take("alarm_background_ringing")
         assertTrue("an alarm notification must be showing", activeNotificationCount() > 0)
+
+        // The notification shade must show the alarm with its "Stop alarm" action.
+        val device = TestSupport.device
+        assertTrue("could not open the notification shade", device.openNotification())
+        val stopVisible = device.wait(Until.hasObject(By.textContains("Stop alarm")), 8_000)
+        Screenshots.take("alarm_notification_shade")
+        device.pressBack()
+        assertTrue("the alarm notification with a 'Stop alarm' action must be in the shade", stopVisible == true)
         // It keeps ringing until someone stops it.
         Thread.sleep(3000)
         assertTrue("alarm must keep ringing until stopped", c.timerScheduler.isRinging.value)

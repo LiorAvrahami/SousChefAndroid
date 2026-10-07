@@ -52,7 +52,7 @@ class CookingJourneyTest {
 
         // ---- recipe list
         rule.waitForTag(TestTags.RECIPES_NEW)
-        Screenshots.take("recipe_list")
+        Screenshots.take("recipe_list", rule)
         rule.onNodeWithTag(TestTags.RECIPES_NEW).performClick()
 
         // ---- editor: name + a text step with two parameters
@@ -63,7 +63,7 @@ class CookingJourneyTest {
         rule.waitForTag(TestTags.STEP_TEXT_FIELD)
         rule.onNodeWithTag(TestTags.STEP_TEXT_FIELD).performTextInput("Add 1.75[cups] water and 3[shakes] of salt")
         Espresso.closeSoftKeyboard()
-        Screenshots.take("editor_text_step")
+        Screenshots.take("editor_text_step", rule)
         rule.onNodeWithTag(TestTags.STEP_DONE).performClick()
 
         // ---- editor: a wait step chosen on the egg-timer dial (tap at 3 o'clock)
@@ -75,16 +75,16 @@ class CookingJourneyTest {
         rule.onNodeWithTag(TestTags.DIAL).performScrollTo()
         rule.onNodeWithTag(TestTags.DIAL).performTouchInput { click(Offset(width * 0.82f, height * 0.5f)) }
         rule.waitForIdle()
-        Screenshots.take("editor_wait_dial")
+        Screenshots.take("editor_wait_dial", rule)
         rule.onNodeWithTag(TestTags.WAIT_DONE).performScrollTo().performClick()
 
         rule.waitForTag(TestTags.EDITOR_SAVE)
-        Screenshots.take("editor_filled")
+        Screenshots.take("editor_filled", rule)
         rule.onNodeWithTag(TestTags.EDITOR_SAVE).performClick()
 
         // ---- recipe detail
         rule.waitForTag(TestTags.COOK_BEST)
-        Screenshots.take("recipe_detail_new")
+        Screenshots.take("recipe_detail_new", rule)
         val recipe = runBlocking { c.repository.getAllRecipes().first { it.name == name } }
         val version = runBlocking { c.repository.getDetails(recipe.id)!!.versions.single() }
         assertEquals(2, version.steps.size)
@@ -95,16 +95,16 @@ class CookingJourneyTest {
         // ---- cook the best (= as written)
         rule.onNodeWithTag(TestTags.COOK_BEST).performScrollTo().performClick()
         rule.waitForTag(TestTags.PROPOSAL_COOK)
-        Screenshots.take("proposal_best")
+        Screenshots.take("proposal_best", rule)
         rule.onNodeWithTag(TestTags.PROPOSAL_COOK).performClick()
 
         // ---- cooking: text page
         rule.waitForTag(TestTags.COOK_PAGER)
         rule.waitForNode(hasText("1.75 cups", substring = true))
-        Screenshots.take("cooking_text_page")
+        Screenshots.take("cooking_text_page", rule)
         rule.onNodeWithTag(TestTags.COOK_OVERVIEW).performClick()
         rule.waitForIdle()
-        Screenshots.take("cooking_overview_sheet")
+        Screenshots.take("cooking_overview_sheet", rule)
         Espresso.pressBack()
         rule.waitForIdle()
         rule.onNodeWithTag(TestTags.COOK_NEXT).performClick()
@@ -114,17 +114,17 @@ class CookingJourneyTest {
         TestSupport.waitFor(10_000, "wait timer to be persisted") {
             runBlocking { c.repository.getInProgressTrials().firstOrNull()?.timerEndAt != null }
         }
-        Screenshots.take("cooking_wait_page")
+        Screenshots.take("cooking_wait_page", rule)
         rule.onNodeWithTag(TestTags.WAIT_SKIP).performClick()
 
         // ---- done page → rating
         rule.waitForTag(TestTags.COOK_FINISH_RATE)
-        Screenshots.take("cooking_done_page")
+        Screenshots.take("cooking_done_page", rule)
         rule.onNodeWithTag(TestTags.COOK_FINISH_RATE).performClick()
         rule.waitForTag(TestTags.RATING_SAVE)
         rule.onNodeWithTag(TestTags.RATING_NOTES).performScrollTo().performTextInput("a little too wet")
         Espresso.closeSoftKeyboard()
-        Screenshots.take("rating")
+        Screenshots.take("rating", rule)
         rule.onNodeWithTag(TestTags.RATING_SAVE).performScrollTo().performClick()
 
         // ---- back on the detail screen with one rated cooking
@@ -134,15 +134,15 @@ class CookingJourneyTest {
         assertEquals(TrialStatus.DONE, done[0].status)
         assertNotNull(done[0].overallScore)
         assertEquals("a little too wet", done[0].notes)
-        Screenshots.take("recipe_detail_after_rating")
+        Screenshots.take("recipe_detail_after_rating", rule)
 
         // ---- explore: classical tweak proposes something different from "as written"
         rule.onNodeWithTag(TestTags.COOK_EXPLORE).performScrollTo().performClick()
         rule.waitForTag(TestTags.EXPLORE_CLASSICAL)
-        Screenshots.take("explore_chooser")
+        Screenshots.take("explore_chooser", rule)
         rule.onNodeWithTag(TestTags.EXPLORE_CLASSICAL).performClick()
         rule.waitForTag(TestTags.PROPOSAL_COOK)
-        Screenshots.take("proposal_classical")
+        Screenshots.take("proposal_classical", rule)
         rule.onNodeWithTag(TestTags.PROPOSAL_COOK).performClick()
         rule.waitForTag(TestTags.COOK_PAGER)
         val exploring = runBlocking { c.repository.getInProgressTrials().single() }
@@ -150,6 +150,6 @@ class CookingJourneyTest {
             "an exploration must change at least one value",
             exploring.values != done[0].values,
         )
-        Screenshots.take("cooking_explore_text_page")
+        Screenshots.take("cooking_explore_text_page", rule)
     }
 }

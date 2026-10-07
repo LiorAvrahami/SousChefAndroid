@@ -187,7 +187,14 @@ class ClassicalOptimizerTest {
             trial(v, listOf(1.75, 3.0, 900.0, 180.0, 20.0, 45.0), 6.0, 1),
             trial(v, listOf(1.9, 3.0, 840.0, 180.0, 22.0, 45.0), 7.5, 2),
         )
-        for (d in listOf(details(listOf(v)), details(listOf(v), trials))) {
+        // Without any rated cooking there is nothing to jump away from: always LOCAL.
+        for (seed in seeds) {
+            assertEquals(
+                ProposalKind.LOCAL,
+                ClassicalOptimizer(Random(seed)).propose(details(listOf(v)), settings(explorationRate = 1.0)).kind,
+            )
+        }
+        for (d in listOf(details(listOf(v), trials))) {
             for (seed in seeds) {
                 assertEquals(
                     ProposalKind.GLOBAL,
