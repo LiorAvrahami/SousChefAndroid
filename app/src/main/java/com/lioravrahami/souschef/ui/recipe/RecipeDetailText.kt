@@ -28,6 +28,12 @@ object RecipeDetailText {
     /** Shown when a proposal or cooking uses exactly the written values. */
     const val AS_WRITTEN = "Exactly as written"
 
+    /**
+     * The recipe if the detail screen may show it: null when it does not exist or sits in the
+     * trash (a trashed recipe must not stay cookable while it is hidden from the list).
+     */
+    fun visible(details: RecipeDetails?): RecipeDetails? = details?.takeIf { it.recipe.deletedAt == null }
+
     /** Date in the user's locale, e.g. "Oct 7, 2026". */
     fun formatDate(millis: Long): String = DateFormat.getDateInstance(DateFormat.MEDIUM).format(Date(millis))
 

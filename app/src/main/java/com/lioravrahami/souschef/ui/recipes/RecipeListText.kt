@@ -9,6 +9,13 @@ object RecipeListText {
     /** Show the search field once the list is at least this long. */
     const val SEARCH_THRESHOLD = 6
 
+    /**
+     * Whether the search field is shown: once the list is long enough, and also whenever a
+     * query is still set, so a filter that outlived a shrinking list can always be cleared.
+     */
+    fun showSearch(recipeCount: Int, query: String): Boolean =
+        recipeCount >= SEARCH_THRESHOLD || query.isNotEmpty()
+
     /** "8.5", "7" — scores are stored in half points. */
     fun formatScore(score: Double): String = StepParser.formatValue(StepParser.round(score))
 

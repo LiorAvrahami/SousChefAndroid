@@ -53,4 +53,14 @@ class RecipeListTextTest {
         assertEquals(listOf("Tomato soup"), RecipeListText.filter(list, "soup tom").map { it.recipe.name })
         assertEquals(emptyList<String>(), RecipeListText.filter(list, "cake").map { it.recipe.name })
     }
+
+    @Test
+    fun searchFieldStaysWhileAQueryIsSet() {
+        val t = RecipeListText.SEARCH_THRESHOLD
+        assertEquals(false, RecipeListText.showSearch(t - 1, ""))
+        assertEquals(true, RecipeListText.showSearch(t, ""))
+        // The list shrank below the threshold while filtering: the field must stay so it can be cleared.
+        assertEquals(true, RecipeListText.showSearch(t - 1, "pasta"))
+        assertEquals(true, RecipeListText.showSearch(0, " "))
+    }
 }

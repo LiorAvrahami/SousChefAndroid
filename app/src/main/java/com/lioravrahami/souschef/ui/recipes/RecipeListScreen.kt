@@ -49,6 +49,7 @@ import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import androidx.lifecycle.compose.dropUnlessResumed
 import androidx.lifecycle.viewmodel.compose.viewModel
 import androidx.lifecycle.viewmodel.initializer
 import androidx.lifecycle.viewmodel.viewModelFactory
@@ -106,7 +107,9 @@ fun RecipeListScreen(
                 banner?.let {
                     CookingBannerCard(
                         banner = it,
-                        onResume = { onResumeCooking(it.trialId) },
+                        // dropUnlessResumed: a second tap during the navigation transition is ignored,
+                        // so the back stack never gets the same screen twice.
+                        onResume = dropUnlessResumed { onResumeCooking(it.trialId) },
                         onAbandon = { abandonCandidate = it },
                         modifier = Modifier.padding(16.dp),
                     )
@@ -125,18 +128,19 @@ fun RecipeListScreen(
                         item(key = "banner") {
                             CookingBannerCard(
                                 banner = b,
-                                onResume = { onResumeCooking(b.trialId) },
+                                onResume = dropUnlessResumed { onResumeCooking(b.trialId) },
                                 onAbandon = { abandonCandidate = b },
                             )
                         }
                     }
-                    if (list.size >= RecipeListText.SEARCH_THRESHOLD) {
+                    // Also shown while a query is set, so a filter left over from a longer list can be cleared.
+                    if (RecipeListText.showSearch(list.size, query)) {
                         item(key = "search") { SearchField(query = query, onQueryChange = { query = it }) }
                     }
                     items(shown, key = { it.recipe.id }) { summary ->
                         RecipeCard(
                             summary = summary,
-                            onOpen = { onOpenRecipe(summary.recipe.id) },
+                            onOpen = dropUnlessResumed { onOpenRecipe(summary.recipe.id) },
                             onMoveToTrash = { trashCandidate = summary },
                         )
                     }

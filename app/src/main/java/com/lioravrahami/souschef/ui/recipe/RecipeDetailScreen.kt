@@ -39,6 +39,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import androidx.lifecycle.compose.dropUnlessResumed
 import androidx.lifecycle.viewmodel.compose.viewModel
 import androidx.lifecycle.viewmodel.initializer
 import androidx.lifecycle.viewmodel.viewModelFactory
@@ -94,7 +95,8 @@ fun RecipeDetailScreen(
         actions = {
             if (details != null) {
                 IconButton(
-                    onClick = { onNewVersion(recipeId, details.latestVersion()?.id) },
+                    // dropUnlessResumed: a double tap during the navigation transition opens one editor, not two.
+                    onClick = dropUnlessResumed { onNewVersion(recipeId, details.latestVersion()?.id) },
                     modifier = Modifier.testTag(TestTags.RECIPE_EDIT),
                 ) {
                     Icon(Icons.Default.Edit, contentDescription = "Edit recipe")
@@ -219,10 +221,10 @@ private fun DetailBody(
         verticalArrangement = Arrangement.spacedBy(16.dp),
     ) {
         if (inProgress != null && inProgress.recipeId == details.recipe.id) {
-            ResumeCard(onResume = { onResume(inProgress.id) })
+            ResumeCard(onResume = dropUnlessResumed { onResume(inProgress.id) })
         }
         if (details.versions.isEmpty()) {
-            NoVersionsCard(onEdit = { onNewVersion(null) })
+            NoVersionsCard(onEdit = dropUnlessResumed { onNewVersion(null) })
         } else {
             StartCookingCard(details = details, onCookBest = vm::cookBest, onExplore = onExplore, vm = vm)
             VersionsSection(details = details, vm = vm, onNewVersion = onNewVersion)
@@ -321,7 +323,7 @@ private fun VersionsSection(
                 cookings = done.size,
                 bestScore = done.mapNotNull { it.overallScore }.maxOrNull(),
                 onCookAsWritten = { vm.cookAsWritten(version) },
-                onEdit = { onNewVersion(version.id) },
+                onEdit = dropUnlessResumed { onNewVersion(version.id) },
                 onToggleArchive = { vm.toggleArchive(version) },
             )
         }

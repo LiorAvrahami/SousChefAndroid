@@ -53,7 +53,7 @@ class RecipeDetailViewModel(
     private val repository get() = container.repository
 
     val content: StateFlow<DetailContent> = repository.observeDetails(recipeId)
-        .map { if (it == null) DetailContent.NotFound else DetailContent.Loaded(it) }
+        .map { d -> RecipeDetailText.visible(d)?.let { DetailContent.Loaded(it) } ?: DetailContent.NotFound }
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(STOP_TIMEOUT), DetailContent.Loading)
 
     /** The recipe with its versions and trials; null while loading or when it does not exist. */
@@ -79,8 +79,18 @@ class RecipeDetailViewModel(
     /** Bumped on every AI request and on cancel, so a late reply of an old request is dropped. */
     private var aiRequest = 0
 
-    /** The latest details, read on demand (also when the screen is not collecting yet). */
-    private suspend fun currentDetails(): RecipeDetails? = details.value ?: repository.getDetails(recipeId)
+    /**
+     * The AI suggestion that was open when "Another suggestion" started a new request. It is
+     * restored when that request is cancelled or fails, so an already-paid suggestion is not lost.
+     */
+    private var aiPrevious: ProposalState.Ready? = null
+
+    /**
+     * The latest details, read on demand (also when the screen is not collecting yet); null when
+     * the recipe does not exist or is in the trash.
+     */
+    private suspend fun currentDetails(): RecipeDetails? =
+        details.value ?: RecipeDetailText.visible(repository.getDetails(recipeId))
 
     // ---------------------------------------------------------------- start flows
 
@@ -155,10 +165,17 @@ class RecipeDetailViewModel(
         }
     }
 
-    /** Asks the AI for a suggestion; cancellable with [cancelLoading]. */
+    /**
+     * Asks the AI for a suggestion; cancellable with [cancelLoading]. When an AI suggestion is
+     * open ("Another suggestion"), it comes back if the new request is cancelled or fails.
+     */
     fun exploreAi() {
         aiJob?.cancel()
         val request = ++aiRequest
+        aiPrevious = (_proposal.value as? ProposalState.Ready)
+            ?.takeIf { it.cook.source == ProposalSource.AI }
+            ?.copy(confirmAbandon = false, starting = false)
+            ?: aiPrevious.takeIf { _proposal.value == ProposalState.Loading }
         _proposal.value = ProposalState.Loading
         aiJob = viewModelScope.launch {
             val d = try {
@@ -169,7 +186,23 @@ class RecipeDetailViewModel(
                 null
             }
             if (d == null || d.versions.isEmpty()) {
-                if (request == aiRequest) noVersions()
+                if (request == aiRequest) {
+                    aiPrevious = null
+                    noVersions()
+                }
+                return@launch
+            }
+            if (d.activeVersions.isEmpty()) {
+                // Same pre-check as the classical path: the AI could only pick an archived
+                // version, which the validator rejects after paying for the calls.
+                if (request == aiRequest) {
+                    aiPrevious = null
+                    _proposal.value = ProposalState.Message(
+                        "Nothing to explore",
+                        "Every version of this recipe is archived. Unarchive a version (or create a new one) to try tweaks.",
+                        isError = false,
+                    )
+                }
                 return@launch
             }
             val result = try {
@@ -182,7 +215,9 @@ class RecipeDetailViewModel(
                 Result.failure(e)
             }
             if (request != aiRequest) return@launch
-            _proposal.value = result.fold(
+            val previous = aiPrevious
+            aiPrevious = null
+            val next: ProposalState = result.fold(
                 onSuccess = { readyFrom(d, it) },
                 onFailure = { e ->
                     ProposalState.Message(
@@ -192,15 +227,27 @@ class RecipeDetailViewModel(
                     )
                 },
             )
+            if (next is ProposalState.Message && previous != null) {
+                // Keep the suggestion the user was looking at; report the failure on top of it.
+                _proposal.value = previous
+                _notice.value = "${next.title}: ${next.text}"
+            } else {
+                _proposal.value = next
+            }
         }
     }
 
-    /** Cancels a running AI request; a cancelled request shows no error. */
+    /**
+     * Cancels a running AI request; a cancelled request shows no error. If it was started by
+     * "Another suggestion", the suggestion that was open before comes back.
+     */
     fun cancelLoading() {
         aiRequest++
         aiJob?.cancel()
         aiJob = null
-        if (_proposal.value == ProposalState.Loading) _proposal.value = ProposalState.Idle
+        val previous = aiPrevious
+        aiPrevious = null
+        if (_proposal.value == ProposalState.Loading) _proposal.value = previous ?: ProposalState.Idle
     }
 
     /** "Another suggestion": re-runs the optimizer that produced the open proposal. */

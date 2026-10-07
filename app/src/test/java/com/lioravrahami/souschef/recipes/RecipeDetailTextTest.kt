@@ -216,4 +216,13 @@ class RecipeDetailTextTest {
         assertNotNull(RecipeDetailText.basedOn(v1))
         assertNull(RecipeDetailText.basedOn(null))
     }
+
+    @Test
+    fun trashedOrMissingRecipeIsNotVisible() {
+        val live = RecipeDetails(recipe, listOf(v1), emptyList())
+        assertSame(live, RecipeDetailText.visible(live))
+        assertNull(RecipeDetailText.visible(null))
+        val trashed = RecipeDetails(recipe.copy(deletedAt = 5_000), listOf(v1), emptyList())
+        assertNull(RecipeDetailText.visible(trashed))
+    }
 }
